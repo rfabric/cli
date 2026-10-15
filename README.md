@@ -17,22 +17,16 @@ brew install rfabric/tap/rfabric
 scoop bucket add rfabric https://github.com/rfabric/scoop
 scoop install rfabric
 
-# Any POSIX (curl)
-curl -fsSL https://raw.githubusercontent.com/rfabric/cli/main/install.sh | sh
-
-# Debian / Ubuntu (apt)
-curl -1sLf https://dl.cloudsmith.io/public/rfabric/release/setup.deb.sh | sudo -E bash
-sudo apt install rfabric
-
-# RHEL / Fedora (yum / dnf)
-curl -1sLf https://dl.cloudsmith.io/public/rfabric/release/setup.rpm.sh | sudo -E bash
-sudo yum install rfabric
+# macOS / Linux (curl)
+curl -fsSL https://get.rfabric.io/cli.sh | sh
 
 # Node.js ecosystem
 npm install -g @rfabric/cli
 ```
 
-Pre-release builds are available via `@next` on npm and the `rfabric/rc` channel on Cloudsmith.
+On Linux with apt-get or dnf (Debian, Ubuntu, Fedora, RHEL), `cli.sh` adds the rFabric package repository <https://linux.rfabric.io> and installs the `rfabric` package, so `sudo apt-get upgrade` / `sudo dnf upgrade` keep it current. Everywhere else it installs the binary from the GitHub Release into `RFABRIC_INSTALL_DIR` (default `/usr/local/bin`), checksum-verified. Binary-only install on any OS: `curl -fsSL https://get.rfabric.io/cli.sh | RFABRIC_INSTALL_DIR=/usr/local/bin sh`.
+
+Pre-release builds are available via `@next` on npm and the `rc` channel (`curl -fsSL https://get.rfabric.io/cli.sh | RFABRIC_CHANNEL=rc sh`).
 
 ## Quick start
 
