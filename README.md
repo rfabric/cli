@@ -39,6 +39,16 @@ rfabric --help          # full command tree
 
 Every command supports `--help`, `--output {json,yaml,table,tsv,value}`, and `--profile {local,dev,staging,production}`.
 
+## Coding agents
+
+rFabric runs a remote [Model Context Protocol](https://modelcontextprotocol.io) server at `https://api.rfabric.io/mcp`. On first use your agent opens the browser for you to sign in to rFabric with OAuth and authorize it. Register it with your agent, e.g. `claude mcp add --transport http rfabric https://api.rfabric.io/mcp`.
+
+Its three tools - `search_operations`, `describe_operation` and `call_operation` - reach every rFabric API operation.
+
+Agent skills in [`skills/`](skills) teach an agent a workflow with the CLI and the MCP tools:
+
+- [`sim-asset-build`](skills/sim-asset-build/SKILL.md) - sim asset builds: from a prompt and a robot to reviewed, qualified simulation assets.
+
 ## Documentation
 
 - Full CLI reference: <https://docs.rfabric.io/cli>
