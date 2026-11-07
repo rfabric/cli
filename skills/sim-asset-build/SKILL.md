@@ -120,7 +120,7 @@ Find the robot: a published `robot_description` sim asset version of the workspa
 - `workspaceId` is the workspace's id (`workspaces.list` finds it by slug).
 - `robotAssetVersionIds` has exactly one key per target format.
 - `request.referenceImageHashes` is optional: up to 8 images, each first uploaded with `sim-asset-builds.reference-images` (`workspaceId`, the image's lowercase hex `sha256`, `size` in bytes, `contentType`); PUT the bytes with the `upload` grant it returns, nothing when `upload` is `null`.
-- `builders` is optional: builder images resolve from the workspace's `simAssetBuild.builders` setting. Pass one only to try another builder image, pinned by digest (`repository@sha256:<64 hex>`).
+- `builders` is optional: each builder the request omits is rFabric's platform builder image (the `compute-handler-image` rows with a `builder`). Pass one only to try another builder image, pinned by digest (`repository@sha256:<64 hex>`).
 - Every budget counter is a hard limit checked before each step and each model call.
 
 ### 2. Wait for the plan
@@ -180,7 +180,8 @@ Poll `sim-asset-builds.get` until `awaiting_review`, then call `sim-asset-builds
 | Code | Status | Do |
 | --- | --- | --- |
 | `no_capable_pool` | 422 | no compute pool on the workspace's compute target (`compute.defaultTargetId` setting) runs `simAssetBuild.step` at `details.resourceClass`: ask a workspace admin for a target with such a pool |
-| `sim_asset_build_builders_unresolved` | 422 | `details.keys` resolve nowhere: set the `simAssetBuild.builders` setting or pass `builders` |
+| `sim_asset_build_builders_unresolved` | 422 | rFabric has no platform builder image for `details.keys`: pass `builders` for those keys, or ask a platform operator to release the sim asset builders |
+| `sim_asset_build_models_unavailable` | 422 | at create, the workspace can run no allowed model for `details.roles`: with `details.clouds` (e.g. `openai`), ask an organization admin to connect that vendor's models API key under Integrations; with none, the workspace's `simAssetBuild.models` setting allows no model for those roles |
 | `sim_asset_build_robot_invalid` | 422 | the robot version is not a published `robot_description` of the workspace in that format |
 | `sim_asset_build_not_awaiting_plan_approval` | 409 | the build is not waiting for plan approval: read its status |
 | `plan_changed` | 409 | read the plan again and approve its `planSha256` |
