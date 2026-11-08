@@ -58,7 +58,7 @@ Every step below has a CLI command; add `--output json` to read what the API ret
 | Edit the plan | `sim-asset-builds.replace-plan` | `rfabric sim-asset-build plan <build-id> --file plan.json` |
 | Approve the plan | `sim-asset-builds.plan-approve` | `rfabric sim-asset-build approve-plan <build-id> --plan-sha256 <hex>` |
 | List the outputs | `sim-asset-builds.outputs` | `rfabric sim-asset-build outputs <build-id>` |
-| Reject an output | `sim-asset-builds.outputs-reject` | `rfabric api post /api/sim-asset-builds/<build-id>/outputs/<version-id>/reject --data '{"notes":"..."}'` |
+| Reject an output or reject and rebuild | `sim-asset-builds.outputs-reject` | `rfabric api post /api/sim-asset-builds/<build-id>/outputs/<version-id>/reject --data '{"notes":"...","rebuild":true}'`; omit `rebuild` for rejection only |
 | Rebuild from a step | `sim-asset-builds.revisions` | `rfabric sim-asset-build revise <build-id> --from <step-key> --notes "..."` |
 | Qualify a version | `sim-assets.versions-qualify` | `rfabric sim-asset qualify <version-id> --level interaction_eval --checklist ...` |
 | Continue after budget exhaustion | `sim-asset-builds.resume` | `rfabric sim-asset-build resume <build-id>` |
@@ -172,9 +172,9 @@ Poll `sim-asset-builds.get` until `awaiting_review`, then call `sim-asset-builds
 - A version imported or converted without license metadata needs a `License: <license>` line in `notes`.
 - Needs the `simAsset.publish` permission. Gating evaluations and training launches stage only versions qualified at `interaction_eval`.
 
-**Reject** a draft output you will not use with `sim-asset-builds.outputs-reject`: `pathParameters` `{"id": "smab_...", "versionId": "smav_..."}` and body `{"notes": "..."}` saying why. The version becomes `deprecated` with your notes.
-
-**Rebuild** an output that is wrong with `sim-asset-builds.revisions` and body `{"fromStepKey": "...", "notes": "..."}`: `fromStepKey` is the step that made it (`version.buildStepKey`: `object:<key>`, `import:<key>` or `assemble:<format>`, or `plan` to plan again) and `notes` say what to change. That step and every step depending on it rerun as a new revision; every other step is reused. Then go back to step 2 (from `plan`) or 4.
+- **Reject without rebuilding** with `sim-asset-builds.outputs-reject`: `pathParameters` `{"id": "smab_...", "versionId": "smav_..."}` and body `{"notes": "..."}` saying why. The version becomes `deprecated` with your notes; this requires `simAsset.publish`.
+- **Reject and rebuild** with the same operation and body `{"notes": "...", "rebuild": true}`. It atomically deprecates the output and starts revision N+1 from the step that registered it, using the rejection notes. It requires both `simAsset.publish` and `definition.author`; do not follow it with a separate `sim-asset-builds.revisions` request.
+- **Start a revision without rejecting an output** with `sim-asset-builds.revisions` and body `{"fromStepKey": "...", "notes": "..."}`: `fromStepKey` is the step to rerun (`version.buildStepKey`: `object:<key>`, `import:<key>` or `assemble:<format>`, or `plan` to plan again). That step and every dependent step rerun as a new revision; every other step is reused. Then go back to step 2 (from `plan`) or 4.
 
 ## Errors
 
