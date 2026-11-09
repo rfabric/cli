@@ -47,7 +47,7 @@ Its three tools - `search_operations`, `describe_operation` and `call_operation`
 
 Agent skills in [`skills/`](skills) teach an agent a workflow with the CLI and the MCP tools:
 
-- [`sim-asset-build`](skills/sim-asset-build/SKILL.md) - sim asset builds: from a prompt and a robot to reviewed, qualified simulation assets.
+- [`sim-asset-build`](skills/sim-asset-build/SKILL.md) - sim asset builds: from a prompt and a robot to reviewed, qualified simulation assets, and the robot models they need, imported from the asset catalog or a GitHub or Hugging Face repository.
 
 ## Documentation
 
