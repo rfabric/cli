@@ -1,0 +1,3 @@
+[tasks.test]
+description = "Check the release promotion, the request body size and the annotation limit (tests/unit.sh, no stack), then run every CI wrapper entry point (GitHub Action, GitLab template, Bitbucket pipe and its image) against the local stack in simulated runner environments; needs the stack's api and auth and rfabric-dev (mise run cli:dev); fixtures in tests/run.sh"
+run = ["bash tests/unit.sh", "bash tests/run.sh"]

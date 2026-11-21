@@ -1,0 +1,169 @@
+name: rFabric sim run
+description: Run an rFabric simulation suite against a candidate image or artifact and gate the job on its verdict.
+author: rFabric
+branding:
+  icon: check-circle
+  color: blue
+
+inputs:
+  suite:
+    description: Sim suite slug, slug@version or id.
+    required: true
+  image:
+    description: Candidate image <repository>@sha256:<digest>, registered with `rfabric artifact-build register`. Set this or candidate.
+    required: false
+    default: ""
+  candidate:
+    description: Candidate artifact id instead of image.
+    required: false
+    default: ""
+  weights:
+    description: Weights directory or archive registered with image.
+    required: false
+    default: ""
+  model:
+    description: "Model id for registration (default: created or reused by name)."
+    required: false
+    default: ""
+  model-name:
+    description: "Model name for registration (default: last path segment of the image repository)."
+    required: false
+    default: ""
+  baseline:
+    description: Baseline subject id.
+    required: false
+    default: ""
+  cells:
+    description: "Evaluation cell ids, comma or newline separated (default: the suite matrix)."
+    required: false
+    default: ""
+  pool:
+    description: "Compute pool id (default: the suite's pool)."
+    required: false
+    default: ""
+  max-worker-hours:
+    description: Launch budget, worker hours (set all three budget inputs or none).
+    required: false
+    default: ""
+  max-parallel-gpu:
+    description: Launch budget, GPU attempts running at once.
+    required: false
+    default: ""
+  max-parallel-cpu:
+    description: Launch budget, CPU attempts running at once.
+    required: false
+    default: ""
+  wall-deadline:
+    description: Seconds the job may run; also bounds the wait.
+    required: false
+    default: "7200"
+  workspace:
+    description: "Workspace id (default: the credential's workspace)."
+    required: false
+    default: ""
+  profile:
+    description: CLI profile (production, staging, dev).
+    required: false
+    default: production
+  api-url:
+    description: Explicit API URL instead of profile.
+    required: false
+    default: ""
+  auth-url:
+    description: Explicit auth URL instead of profile.
+    required: false
+    default: ""
+  client-id:
+    description: "Service credential client id. Without client-secret the CLI exchanges the job's identity token (needs `permissions: id-token: write`)."
+    required: true
+  client-secret:
+    description: Secret, only for a credential without a trust.
+    required: false
+    default: ""
+  cli-version:
+    description: "CLI version (default: the version this action release pins)."
+    required: false
+    default: ""
+  comment:
+    description: Create or update one pull request comment per suite.
+    required: false
+    default: "true"
+
+outputs:
+  job-id:
+    description: Evaluation job id.
+    value: ${{ steps.publish.outputs.job-id }}
+  report-id:
+    description: Evaluation report id.
+    value: ${{ steps.publish.outputs.report-id }}
+  conclusion:
+    description: Report conclusion (pass, fail, inconclusive).
+    value: ${{ steps.publish.outputs.conclusion }}
+  operational-classification:
+    description: Report operational classification.
+    value: ${{ steps.publish.outputs.operational-classification }}
+  job-url:
+    description: The evaluation job's page.
+    value: ${{ steps.publish.outputs.job-url }}
+  artifact-id:
+    description: Artifact registered from image.
+    value: ${{ steps.publish.outputs.artifact-id }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install the rFabric CLI
+      shell: bash
+      env:
+        RFABRIC_CLI_VERSION: ${{ inputs.cli-version }}
+      run: '"$GITHUB_ACTION_PATH/scripts/github.sh" install'
+
+    # exec: the runner signals this step's process on cancel; it must be the script that
+    # forwards the signal to the CLI.
+    - name: Run the sim suite
+      id: run
+      shell: bash
+      env:
+        RFABRIC_SUITE: ${{ inputs.suite }}
+        RFABRIC_IMAGE: ${{ inputs.image }}
+        RFABRIC_CANDIDATE: ${{ inputs.candidate }}
+        RFABRIC_WEIGHTS: ${{ inputs.weights }}
+        RFABRIC_MODEL: ${{ inputs.model }}
+        RFABRIC_MODEL_NAME: ${{ inputs.model-name }}
+        RFABRIC_BASELINE: ${{ inputs.baseline }}
+        RFABRIC_CELLS: ${{ inputs.cells }}
+        RFABRIC_POOL: ${{ inputs.pool }}
+        RFABRIC_MAX_WORKER_HOURS: ${{ inputs.max-worker-hours }}
+        RFABRIC_MAX_PARALLEL_GPU: ${{ inputs.max-parallel-gpu }}
+        RFABRIC_MAX_PARALLEL_CPU: ${{ inputs.max-parallel-cpu }}
+        RFABRIC_WALL_DEADLINE: ${{ inputs.wall-deadline }}
+        RFABRIC_WORKSPACE: ${{ inputs.workspace }}
+        RFABRIC_PROFILE: ${{ inputs.profile }}
+        RFABRIC_API_URL: ${{ inputs.api-url }}
+        RFABRIC_AUTH_URL: ${{ inputs.auth-url }}
+        RFABRIC_CLIENT_ID: ${{ inputs.client-id }}
+        RFABRIC_CLIENT_SECRET: ${{ inputs.client-secret }}
+      run: exec "$GITHUB_ACTION_PATH/scripts/github.sh" run
+
+    - name: Publish the result
+      id: publish
+      if: always()
+      shell: bash
+      env:
+        RFABRIC_SUITE: ${{ inputs.suite }}
+        RFABRIC_COMMENT: ${{ inputs.comment }}
+        RFABRIC_RESULT_DIR: ${{ steps.run.outputs.dir }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: '"$GITHUB_ACTION_PATH/scripts/github.sh" publish'
+
+    - name: Upload the JUnit report
+      if: always() && steps.publish.outputs.artifact-name != ''
+      continue-on-error: true
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ steps.publish.outputs.artifact-name }}
+        path: |
+          ${{ steps.run.outputs.dir }}/junit.xml
+          ${{ steps.run.outputs.dir }}/scorecard.md
+        if-no-files-found: ignore
+        overwrite: true

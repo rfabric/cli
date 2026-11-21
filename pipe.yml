@@ -1,0 +1,71 @@
+name: rFabric sim run
+image: public.ecr.aws/rfabric/cli:0.1.9
+category: Testing
+description: Run an rFabric simulation suite against a candidate image or artifact and gate the step on its verdict, with a Code Insights report, JUnit test results and rfabric-result.json.
+repository: https://github.com/rfabric/cli
+maintainer:
+  name: rFabric
+  website: https://rfabric.io
+vendor:
+  name: rFabric
+  website: https://rfabric.io
+tags:
+  - robotics
+  - simulation
+  - evaluation
+  - testing
+# Pipe variables. Secretless: the step sets `oidc: audiences:` to the trust's audience, and
+# the CLI exchanges BITBUCKET_STEP_OIDC_TOKEN. JUnit results go to
+# test-results/rfabric/, the outputs (job-id, report-id, conclusion, operational-classification,
+# job-url, artifact-id) to rfabric-result.json in the clone directory; the step exits with the
+# CLI's exit code.
+variables:
+  - name: RFABRIC_SUITE
+    description: Sim suite slug, slug@version or id.
+    required: true
+  - name: RFABRIC_IMAGE
+    description: Candidate image <repository>@sha256:<digest>, registered with `rfabric artifact-build register`. Set this or RFABRIC_CANDIDATE.
+  - name: RFABRIC_CANDIDATE
+    description: Candidate artifact id instead of RFABRIC_IMAGE.
+  - name: RFABRIC_WEIGHTS
+    description: Weights directory or archive registered with RFABRIC_IMAGE.
+  - name: RFABRIC_MODEL
+    description: Model id for registration.
+    default: created or reused by name
+  - name: RFABRIC_MODEL_NAME
+    description: Model name for registration.
+    default: last path segment of the image repository
+  - name: RFABRIC_BASELINE
+    description: Baseline subject id.
+  - name: RFABRIC_CELLS
+    description: Evaluation cell ids, comma or newline separated.
+    default: the suite matrix
+  - name: RFABRIC_POOL
+    description: Compute pool id.
+    default: the suite's pool
+  - name: RFABRIC_MAX_WORKER_HOURS
+    description: Launch budget, worker hours (set all three budget variables or none).
+  - name: RFABRIC_MAX_PARALLEL_GPU
+    description: Launch budget, GPU attempts running at once.
+  - name: RFABRIC_MAX_PARALLEL_CPU
+    description: Launch budget, CPU attempts running at once.
+  - name: RFABRIC_WALL_DEADLINE
+    description: Seconds the job may run; also bounds the wait. Bitbucket documents no signal for a stopped step, so this bounds a job whose step was stopped.
+    default: "7200"
+  - name: RFABRIC_WORKSPACE
+    description: Workspace id.
+    default: the credential's workspace
+  - name: RFABRIC_PROFILE
+    description: CLI profile (production, staging, dev).
+    default: production
+  - name: RFABRIC_API_URL
+    description: Explicit API URL instead of RFABRIC_PROFILE.
+  - name: RFABRIC_AUTH_URL
+    description: Explicit auth URL instead of RFABRIC_PROFILE.
+  - name: RFABRIC_CLIENT_ID
+    description: Service credential client id.
+    required: true
+  - name: RFABRIC_CLIENT_SECRET
+    description: Secret, only for a credential without a trust (a secured repository variable).
+  - name: RFABRIC_BITBUCKET_TOKEN
+    description: Access token with pull request write access; when set on a pull request pipeline, the pipe posts one new pull request comment per run and never edits a comment.
