@@ -1,0 +1,3 @@
+# The provider scripts source scripts/sim-run.sh (# shellcheck source=sim-run.sh).
+source-path=SCRIPTDIR
+external-sources=true
