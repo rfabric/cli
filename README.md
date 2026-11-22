@@ -41,7 +41,7 @@ Every command supports `--help`, `--output {json,yaml,table,tsv,value}`, and `--
 
 ## CI/CD
 
-The GitHub Action, GitLab template and Bitbucket pipe that wrap these commands are documented in [CI.md](https://github.com/rfabric/cli/blob/main/CI.md).
+The GitHub Action, GitLab template and Bitbucket pipe that wrap these commands are documented in [CI.md](https://github.com/rfabric/cli/blob/main/CI.md). They take two service credentials: `client-id`, which may publish definitions and is trusted on the base branch only, and `pull-request-client-id`, which may not publish and is used on pull request runs; without it `client-id` runs everywhere, and the merge check is no longer one a pull request cannot weaken ([CI.md, Credentials](https://github.com/rfabric/cli/blob/main/CI.md#credentials)).
 
 Gate a pipeline on a simulation suite:
 
@@ -52,11 +52,12 @@ rfabric sim run dock-acceptance --candidate art_... --wait --junit report.xml --
 
 ### Authentication
 
-Create a service credential once, from a workstation. A secretless credential trusts the identity tokens your CI provider issues; pin the repository by its immutable id (`repository_id` on GitHub Actions, `project_id` on GitLab, `repositoryUuid` on Bitbucket Pipelines):
+Create a service credential once, from a workstation. A secretless credential trusts the identity tokens your CI provider issues; pin the repository by its immutable id (`repository_id` on GitHub Actions, `project_id` on GitLab, `repositoryUuid` on Bitbucket Pipelines). A launch credential registers the candidate image and runs suites:
 
 ```bash
 rfabric credential create --name robot-ci --workspace-id wks_... \
-  --permission simSuite:launch --permission evaluationJob:cancel --permission artifact:build,read --permission model:create,read \
+  --permission simSuite:launch --permission evaluationJob:launch,cancel \
+  --permission artifact:read,create,build --permission model:read,create \
   --trust-issuer https://token.actions.githubusercontent.com \
   --trust-condition repository_id=123456789 --trust-condition ref=refs/heads/main
 rfabric credential trust list rf_svc_...     # the trusts and the audience their tokens must carry
@@ -64,7 +65,9 @@ rfabric credential trust add rf_svc_... --issuer https://gitlab.com --condition 
 rfabric credential trust remove rf_svc_... cctr_...
 ```
 
-In CI set only `RFABRIC_CLIENT_ID` (and `--profile` for an environment other than production; the profiles `local`, `dev`, `staging` and `production` need no config file). The CLI obtains the CI identity token and exchanges it for an access token, renewing it during long waits. Commands use the workspace the credential is scoped to unless `--workspace`, `RFABRIC_WORKSPACE` or the profile names one:
+A definition directory (`rfabric eval apply`, `rfabric sim run --dir`) needs two credentials, so a pull request cannot change the approved suites its own merge check runs: a base-branch credential that also holds `evaluationDefinition:author,publish` and `simAsset:publish` (it publishes the directory and designates standing baselines), trusting only base-branch runs, and a pull request credential with the launch permissions above, trusting only pull request runs. CI.md (Credentials) has both commands and each provider's trust conditions; the CI wrappers take their client ids as `client-id` and `pull-request-client-id`.
+
+In CI set only `RFABRIC_CLIENT_ID`, the client id of the credential that run uses (and `--profile` for an environment other than production; the profiles `local`, `dev`, `staging` and `production` need no config file). The CLI obtains the CI identity token and exchanges it for an access token, renewing it during long waits. Commands use the workspace the credential is scoped to unless `--workspace`, `RFABRIC_WORKSPACE` or the profile names one:
 
 | CI | Identity token |
 | --- | --- |
