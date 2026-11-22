@@ -1,0 +1,3 @@
+# link-tree symlinks into dev/.agents; never tracked here (.agents/tree/cli/AGENTS.md)
+/AGENTS.md
+/.omp

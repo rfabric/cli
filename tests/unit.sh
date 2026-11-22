@@ -22,6 +22,13 @@ check() { # check <description> <command...>
 equal() { [[ $1 == "$2" ]]; }
 
 # ------------------------------------------------------------------------------------------
+say "action repository: no tracked symlink"
+# GitHub downloads this repository as the action rfabric/cli and fails the job's set-up on a
+# symlink whose target is missing from the download (actions/runner#3234).
+links=$(git -C "$root" ls-files -s | awk '$1 == "120000" {print $4}' | paste -sd ' ' -)
+check "no tracked symlink (found: ${links:-none})" equal "$links" ""
+
+# ------------------------------------------------------------------------------------------
 say "promote.sh: the stable patches of a line"
 # shellcheck source=../scripts/promote.sh
 patches() { (source "$root/scripts/promote.sh" && printf '%s\n' "${@:2}" | stable_patches "$1" | paste -sd ' ' -); }
