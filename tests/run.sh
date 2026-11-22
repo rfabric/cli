@@ -19,13 +19,16 @@
 # Needs the stack's api and auth (with the sim.attempt handler image on the local Docker pool),
 # `rfabric-dev` (`mise run cli:dev`), node, jq, git and docker. Optional: RFABRIC_API_URL
 # (default http://localhost:10201), RFABRIC_AUTH_URL (default http://localhost:10301),
-# RFABRIC_TEST_STUB_PORT (default 18091).
+# RFABRIC_TEST_STUB_PORT (default 18091), RFABRIC_TEST_IMAGE_CLI (the CLI the pipe image gets: a
+# Linux build for the Docker engine's platform; default rfabric-dev, which only a Linux host can
+# put in the image).
 set -uo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 api_url=${RFABRIC_API_URL:-http://localhost:10201}
 auth_url=${RFABRIC_AUTH_URL:-http://localhost:10301}
 port=${RFABRIC_TEST_STUB_PORT:-18091}
+image_cli=${RFABRIC_TEST_IMAGE_CLI:-}
 stub="http://127.0.0.1:$port"
 provider_variables='^(RFABRIC|GITHUB|ACTIONS|RUNNER|GITLAB|CI|BITBUCKET)_'
 suite=pass
@@ -479,9 +482,10 @@ reports="http://api.bitbucket.org/2.0/repositories/acme/robot/commit/$bb_sha/rep
 report_url="$reports/rfabric-sim-run-$failing_suite"
 check "a failing suite exits 10 (got $bb_code)" equal "$bb_code" 10
 check "JUnit under test-results/rfabric/" test -s "$bb_dir/junit.xml"
-check "rfabric-result.json: the six outputs" equal "$(jq -c 'keys_unsorted' "$bb_repo/rfabric-result.json")" \
-  '["job-id","report-id","conclusion","operational-classification","job-url","artifact-id"]'
+check "rfabric-result.json: the seven outputs" equal "$(jq -c 'keys_unsorted' "$bb_repo/rfabric-result.json")" \
+  '["job-id","report-id","conclusion","operational-classification","job-url","artifact-id","suites"]'
 check "rfabric-result.json job-id" matches "$bb_job" '^evj_[0-9A-Za-z]{26}$'
+check "rfabric-result.json suites: the suite's job" equal "$(jq -r '.suites | map(.jobId) | join(" ")' "$bb_repo/rfabric-result.json")" "$bb_job"
 check "the job records the Bitbucket provenance" equal \
   "$(job "$bb_job" | jq -c '.ci | {repository, commit, pullRequest}')" \
   "{\"repository\":\"https://bitbucket.org/acme/robot\",\"commit\":\"$bb_sha\",\"pullRequest\":5}"
@@ -503,7 +507,10 @@ check "one pull request comment posted, the suite's marker first" equal "$(bb_po
 check "no pull request comment listed or edited" equal "$(bb_reads_or_edits)" 0
 
 say "Bitbucket pipe: the image (local CLI build) runs the entry point"
-docker build -q --build-arg RFABRIC_CLI=local --build-context "cli=$work/bin" -t "$image_tag" "$root" > /dev/null \
+# The image's CLI: RFABRIC_TEST_IMAGE_CLI, else the CLI under test.
+mkdir -p "$work/image-bin"
+cp "${image_cli:-$work/bin/rfabric}" "$work/image-bin/rfabric" || exit 1
+docker build -q --build-arg RFABRIC_CLI=local --build-context "cli=$work/image-bin" -t "$image_tag" "$root" > /dev/null \
   || { fail "docker build"; exit 1; }
 # docker_pipe <docker run options...>: the pipe as Bitbucket runs it, with the exported variables.
 docker_pipe() {
