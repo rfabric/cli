@@ -1,5 +1,5 @@
 name: rFabric sim run
-image: public.ecr.aws/rfabric/cli:0.1.9
+image: public.ecr.aws/rfabric/cli:0.1.10
 category: Testing
 description: Run an rFabric simulation suite against a candidate image or artifact and gate the step on its verdict, with a Code Insights report, JUnit test results and rfabric-result.json.
 repository: https://github.com/rfabric/cli

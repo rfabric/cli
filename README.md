@@ -5,7 +5,7 @@ The terminal-native interface to the [rFabric](https://rfabric.io) robotics life
 - Single static binary, ~10ms startup, no runtime dependencies
 - linux / macOS / Windows on amd64 + arm64
 - Structured output (`json`, `yaml`, `table`, `tsv`, `value`) for scripting
-- OAuth device flow for humans, client credentials for CI
+- OAuth device flow for humans; service credentials for CI, secretless in GitHub Actions, GitLab CI and Bitbucket Pipelines
 
 ## Install
 
@@ -38,6 +38,54 @@ rfabric --help          # full command tree
 ```
 
 Every command supports `--help`, `--output {json,yaml,table,tsv,value}`, and `--profile {local,dev,staging,production}`.
+
+## CI/CD
+
+The GitHub Action, GitLab template and Bitbucket pipe that wrap these commands are documented in [CI.md](https://github.com/rfabric/cli/blob/main/CI.md).
+
+Gate a pipeline on a simulation suite:
+
+```bash
+rfabric artifact-build register ghcr.io/acme/policy@sha256:4f2a... --weights ./checkpoint --timeout 30m   # prints the artifact id
+rfabric sim run dock-acceptance --candidate art_... --wait --junit report.xml --markdown report.md
+```
+
+### Authentication
+
+Create a service credential once, from a workstation. A secretless credential trusts the identity tokens your CI provider issues; pin the repository by its immutable id (`repository_id` on GitHub Actions, `project_id` on GitLab, `repositoryUuid` on Bitbucket Pipelines):
+
+```bash
+rfabric credential create --name robot-ci --workspace-id wks_... \
+  --permission simSuite:launch --permission evaluationJob:cancel --permission artifact:build,read --permission model:create,read \
+  --trust-issuer https://token.actions.githubusercontent.com \
+  --trust-condition repository_id=123456789 --trust-condition ref=refs/heads/main
+rfabric credential trust list rf_svc_...     # the trusts and the audience their tokens must carry
+rfabric credential trust add rf_svc_... --issuer https://gitlab.com --condition project_id=4242
+rfabric credential trust remove rf_svc_... cctr_...
+```
+
+In CI set only `RFABRIC_CLIENT_ID` (and `--profile` for an environment other than production; the profiles `local`, `dev`, `staging` and `production` need no config file). The CLI obtains the CI identity token and exchanges it for an access token, renewing it during long waits. Commands use the workspace the credential is scoped to unless `--workspace`, `RFABRIC_WORKSPACE` or the profile names one:
+
+| CI | Identity token |
+| --- | --- |
+| GitHub Actions | requested for the printed audience; the job needs `permissions: id-token: write` |
+| GitLab CI | an `id_tokens:` entry named `RFABRIC_ID_TOKEN` with `aud:` the printed audience |
+| Bitbucket Pipelines | `oidc: audiences:` on the step with the printed audience (`BITBUCKET_STEP_OIDC_TOKEN`) |
+| any other | `RFABRIC_ID_TOKEN` |
+
+A refused exchange prints the token's issuer and audience and the audience expected. A credential with a secret uses `RFABRIC_CLIENT_ID` and `RFABRIC_CLIENT_SECRET`.
+
+### `rfabric sim run`
+
+`rfabric sim run <suite>` takes a sim suite id, a slug (its latest published version in the workspace) or `slug@version`. The suite's protocol decides whether the verdict gates. `--preflight` prints the plan, the image checks and every blocker without launching.
+
+In GitHub Actions, GitLab CI, Bitbucket Pipelines, Jenkins, CircleCI, Buildkite and Azure Pipelines the launch records the CI build: repository, commit built, build id, pipeline page, git ref, pull request and its head commit. Each `--ci-*` flag (`--ci-repository`, `--ci-commit`, `--ci-build-id`, `--ci-pipeline-url`, `--ci-ref`, `--ci-pull-request`, `--ci-pull-request-url`, `--ci-head-commit`, `--ci-destination-merged`) overrides its field. Without `--idempotency-key` the launch is keyed on the pipeline run and attempt: a retried step returns the same job, a new attempt launches a new one. `rfabric evaluation-job ls --ci-commit <sha>` and `--ci-head-commit <sha>` find the jobs of a commit.
+
+With `--wait` the command prints the report summary, writes `--junit` and `--markdown` (a scorecard for pull request comments and job summaries), and exits with the verdict; `--wait-timeout` bounds the wait (default `2h`; the job keeps running). With `--output json` the printed report carries `failedCases`: every failed or inconclusive case-side of the report's JUnit document, with its run, cell, scenario, seed and reason. SIGINT or SIGTERM during the wait cancels the job; during the launch it cancels the job when the launch carries an idempotency key (`--idempotency-key`, or the CI default). `rfabric eval run --wait` exits the same way. `rfabric help exit-codes` prints the exit codes.
+
+### `rfabric artifact-build register`
+
+`rfabric artifact-build register <repository>@sha256:<digest> [--weights <dir|file>] [--model <mdl_id>] [--model-name <name>] [--source-ref <ref>]` turns a built image into a ready `model_release` artifact in one idempotent command: it reads the manifest from the registry (with your Docker login) or, for a reference without a registry host, from the local Docker engine, uploads only what the build lacks and waits until the artifact is ready. The artifact is identified by the model, the image digest and the weights digest: a rerun returns it unchanged. The build attestation records `--source-ref`, else the CI commit, else the image reference.
 
 ## Coding agents
 
