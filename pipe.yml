@@ -1,7 +1,7 @@
 name: rFabric sim run
 image: public.ecr.aws/rfabric/cli:0.1.9
 category: Testing
-description: Run an rFabric simulation suite against a candidate image or artifact and gate the step on its verdict, with a Code Insights report, JUnit test results and rfabric-result.json.
+description: Run rFabric simulation suites, one suite or a definition directory's, against a candidate image or artifact and gate the step on the verdict, with a Code Insights report, JUnit test results and rfabric-result.json.
 repository: https://github.com/rfabric/cli
 maintainer:
   name: rFabric
@@ -17,12 +17,24 @@ tags:
 # Pipe variables. Secretless: the step sets `oidc: audiences:` to the trust's audience, and
 # the CLI exchanges BITBUCKET_STEP_OIDC_TOKEN. JUnit results go to
 # test-results/rfabric/, the outputs (job-id, report-id, conclusion, operational-classification,
-# job-url, artifact-id) to rfabric-result.json in the clone directory; the step exits with the
-# CLI's exit code.
+# job-url, artifact-id, suites) to rfabric-result.json in the clone directory; the step exits
+# with the CLI's exit code.
 variables:
   - name: RFABRIC_SUITE
-    description: Sim suite slug, slug@version or id.
-    required: true
+    description: Sim suite slug, slug@version or id. Set this or RFABRIC_DIR.
+  - name: RFABRIC_DIR
+    description: "Definition directory (e.g. eval): runs its approved suites. A pull request pipeline first runs the apply preview (problems fail the step) and test-runs changed definitions; a pipeline on RFABRIC_BASE_BRANCH first applies the directory. Set this or RFABRIC_SUITE."
+  - name: RFABRIC_SUITES
+    description: With RFABRIC_DIR, suite slugs to run, comma or newline separated.
+    default: every approved suite
+  - name: RFABRIC_TAGS
+    description: With RFABRIC_DIR, run only the suites carrying any of these tags, comma or newline separated.
+  - name: RFABRIC_BASE_BRANCH
+    description: Branch whose pipelines apply RFABRIC_DIR and whose passing jobs RFABRIC_BASELINE auto reads. Bitbucket gives a step no default branch; set it when yours is not main.
+    default: main
+  - name: RFABRIC_TEST_RUN
+    description: With RFABRIC_DIR, on a pull request that changes a definition, auto test-runs the changed suites (reported as not yet approved, never fails the step); false skips the test run.
+    default: auto
   - name: RFABRIC_IMAGE
     description: Candidate image <repository>@sha256:<digest>, registered with `rfabric artifact-build register`. Set this or RFABRIC_CANDIDATE.
   - name: RFABRIC_CANDIDATE
@@ -36,7 +48,7 @@ variables:
     description: Model name for registration.
     default: last path segment of the image repository
   - name: RFABRIC_BASELINE
-    description: Baseline subject id.
+    description: Baseline subject id, or auto (on RFABRIC_BASE_BRANCH run without one and designate each passing job as its protocol's standing baseline; elsewhere compare with the designated job's subject).
   - name: RFABRIC_CELLS
     description: Evaluation cell ids, comma or newline separated.
     default: the suite matrix
@@ -63,8 +75,11 @@ variables:
   - name: RFABRIC_AUTH_URL
     description: Explicit auth URL instead of RFABRIC_PROFILE.
   - name: RFABRIC_CLIENT_ID
-    description: Service credential client id.
+    description: Service credential client id, used on every pipeline but a pull request's when RFABRIC_PULL_REQUEST_CLIENT_ID is set.
     required: true
+  - name: RFABRIC_PULL_REQUEST_CLIENT_ID
+    description: Service credential client id used on pull request pipelines, a credential that trusts pull requests and cannot publish.
+    default: RFABRIC_CLIENT_ID
   - name: RFABRIC_CLIENT_SECRET
     description: Secret, only for a credential without a trust (a secured repository variable).
   - name: RFABRIC_BITBUCKET_TOKEN
