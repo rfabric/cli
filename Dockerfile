@@ -18,9 +18,14 @@ RUN apt-get update \
 FROM base AS cli-release
 ARG RFABRIC_VERSION
 COPY VERSION /tmp/VERSION
+# The installer is downloaded first, so a failed download fails the build, and the build checks
+# that the installed CLI is the pinned version.
 RUN version="${RFABRIC_VERSION:-$(cat /tmp/VERSION)}" \
-    && curl -fsSL https://get.rfabric.io/cli.sh | RFABRIC_VERSION="v${version#v}" RFABRIC_INSTALL_DIR=/usr/local/bin sh \
-    && rm /tmp/VERSION
+    && version="${version#v}" \
+    && curl -fsSL -o /tmp/cli.sh https://get.rfabric.io/cli.sh \
+    && RFABRIC_VERSION="v$version" RFABRIC_INSTALL_DIR=/usr/local/bin sh /tmp/cli.sh \
+    && rfabric version --output json | jq -e --arg version "$version" '.version == $version' > /dev/null \
+    && rm /tmp/VERSION /tmp/cli.sh
 
 FROM base AS cli-local
 COPY --from=cli rfabric /usr/local/bin/rfabric
