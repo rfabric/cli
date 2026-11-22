@@ -1,4 +1,4 @@
-# Publishes public.ecr.aws/rfabric/cli:<version> (linux/amd64, linux/arm64) for each stable
+# Publishes ghcr.io/rfabric/cli:<version> (linux/amd64, linux/arm64) for each stable
 # release v<version> of this repository: the pinned rfabric CLI and the CI wrapper scripts, the
 # image of the Bitbucket pipe and of the GitLab template's job. A published version tag is
 # never overwritten. Once that image exists, `promote` moves the two floating references of
@@ -6,11 +6,10 @@
 # newest stable patch of the line whose image exists, this release or a newer one
 # (scripts/promote.sh <version>).
 #
-# Repository variable: AWS_ECR_PUBLIC_PUSH_ROLE_ARN (ECR Public push role; it trusts this
-# repository's release tags, so the jobs set no environment). Repository secret:
-# RELEASE_GITHUB_TOKEN (Contents and Workflows write on this repository) pushes the git tag:
-# the job token cannot hold the workflows permission, and GitHub may refuse it a tag move to a
-# commit that changes .github/workflows/.
+# The jobs push the image with the job token (packages: write); the package is public.
+# Repository secret: RELEASE_GITHUB_TOKEN (Contents and Workflows write on this repository)
+# pushes the git tag: the job token cannot hold the workflows permission, and GitHub may refuse
+# it a tag move to a commit that changes .github/workflows/.
 name: image
 
 on:
@@ -20,7 +19,7 @@ on:
 permissions: {}
 
 env:
-  IMAGE: public.ecr.aws/rfabric/cli
+  IMAGE: ghcr.io/rfabric/cli
 
 jobs:
   publish:
@@ -29,7 +28,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-      id-token: write
+      packages: write
     outputs:
       version: ${{ steps.version.outputs.version }}
       line: ${{ steps.version.outputs.line }}
@@ -71,29 +70,24 @@ jobs:
           echo "::error::release $TAG has no linux binaries after 15 minutes"
           exit 1
 
-      # ECR Public lives in us-east-1 only.
-      - name: Configure AWS credentials (ECR Public push)
-        uses: aws-actions/configure-aws-credentials@v6
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
         with:
-          role-to-assume: ${{ vars.AWS_ECR_PUBLIC_PUSH_ROLE_ARN }}
-          aws-region: us-east-1
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
 
       - name: Refuse an existing version tag
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          if aws ecr-public describe-images --repository-name cli --image-ids "imageTag=$VERSION" > /dev/null 2>&1; then
+          if docker buildx imagetools inspect "$IMAGE:$VERSION" > /dev/null 2>&1; then
             echo "::error::$IMAGE:$VERSION already exists"
             exit 1
           fi
-
-      - name: Log in to ECR Public
-        uses: aws-actions/amazon-ecr-login@v2
-        with:
-          registry-type: public
-
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -102,6 +96,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           build-args: RFABRIC_VERSION=${{ steps.version.outputs.version }}
           tags: ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           push: true
 
   # One promotion per release line at a time. GitHub keeps one running and one pending job per
@@ -116,22 +111,18 @@ jobs:
       group: promote-v${{ needs.publish.outputs.line }}
       cancel-in-progress: false
     permissions:
-      id-token: write
+      packages: write
     steps:
       - uses: actions/checkout@v6
         with:
           token: ${{ secrets.RELEASE_GITHUB_TOKEN }}
 
-      - name: Configure AWS credentials (ECR Public push)
-        uses: aws-actions/configure-aws-credentials@v6
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
         with:
-          role-to-assume: ${{ vars.AWS_ECR_PUBLIC_PUSH_ROLE_ARN }}
-          aws-region: us-east-1
-
-      - name: Log in to ECR Public
-        uses: aws-actions/amazon-ecr-login@v2
-        with:
-          registry-type: public
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
 
       - uses: docker/setup-buildx-action@v3
 

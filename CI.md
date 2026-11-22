@@ -6,9 +6,9 @@ Run an rFabric simulation suite from CI and gate the pipeline on its verdict. Th
 |---|---|
 | GitHub Actions | `uses: rfabric/cli@v0.1` (`action.yml`) |
 | GitLab CI | `include: remote: https://raw.githubusercontent.com/rfabric/cli/v0.1/templates/sim-run.yml` |
-| Bitbucket Pipelines | `pipe: docker://public.ecr.aws/rfabric/cli:0.1` (`pipe.yml`) |
+| Bitbucket Pipelines | `pipe: docker://ghcr.io/rfabric/cli:0.1` (`pipe.yml`) |
 
-`v0.1` and the image tag `0.1` move together to the newest release of 0.1 once its image is published, so a pipeline gets its fixes without an edit. To pin an exact patch, use its full version: `rfabric/cli@v0.1.10`, `https://raw.githubusercontent.com/rfabric/cli/v0.1.10/templates/sim-run.yml`, `public.ecr.aws/rfabric/cli:0.1.10`.
+`v0.1` and the image tag `0.1` move together to the newest release of 0.1 once its image is published, so a pipeline gets its fixes without an edit. To pin an exact patch, use its full version: `rfabric/cli@v0.1.11`, `https://raw.githubusercontent.com/rfabric/cli/v0.1.11/templates/sim-run.yml`, `ghcr.io/rfabric/cli:0.1.11`.
 
 Each wrapper registers the candidate image (`rfabric artifact-build register`) when `image` is given, preflights the launch, launches the suite, waits for the report, publishes the JUnit report and the markdown scorecard where the provider shows them, and exits with the CLI's exit code (`rfabric help exit-codes` lists the verdict codes). Cancelling the pipeline cancels the evaluation job.
 
@@ -65,7 +65,7 @@ include:
       audience: https://auth.rfabric.io
 ```
 
-The job `rfabric-sim-run` runs in `public.ecr.aws/rfabric/cli:<cli-version>` on the stage `stage` (default `test`). JUnit goes to the merge request's test report, the outputs to the dotenv report (`RFABRIC_JOB_ID`, `RFABRIC_REPORT_ID`, `RFABRIC_CONCLUSION`, `RFABRIC_OPERATIONAL_CLASSIFICATION`, `RFABRIC_JOB_URL`, `RFABRIC_ARTIFACT_ID`). A canceled job cancels the evaluation job in `after_script`. With a CI/CD variable `RFABRIC_GITLAB_TOKEN` (a token with the `api` scope), a merge request pipeline creates or updates one note per suite, written by that token's user.
+The job `rfabric-sim-run` runs in `ghcr.io/rfabric/cli:<cli-version>` on the stage `stage` (default `test`). JUnit goes to the merge request's test report, the outputs to the dotenv report (`RFABRIC_JOB_ID`, `RFABRIC_REPORT_ID`, `RFABRIC_CONCLUSION`, `RFABRIC_OPERATIONAL_CLASSIFICATION`, `RFABRIC_JOB_URL`, `RFABRIC_ARTIFACT_ID`). A canceled job cancels the evaluation job in `after_script`. With a CI/CD variable `RFABRIC_GITLAB_TOKEN` (a token with the `api` scope), a merge request pipeline creates or updates one note per suite, written by that token's user.
 
 ## Bitbucket Pipelines
 
@@ -78,7 +78,7 @@ pipelines:
             audiences:
               - https://auth.rfabric.io
           script:
-            - pipe: docker://public.ecr.aws/rfabric/cli:0.1
+            - pipe: docker://ghcr.io/rfabric/cli:0.1
               variables:
                 RFABRIC_SUITE: dock-acceptance
                 RFABRIC_IMAGE: docker.io/acme/policy@sha256:4f2a...
@@ -122,4 +122,4 @@ GitHub and GitLab use these names; the Bitbucket pipe uses `RFABRIC_` plus the n
 
 `scripts/sim-run.sh` is the one script that maps the inputs to `rfabric` flags and reads the result; `github.sh`, `gitlab.sh` and `pipe.sh` only publish it. `mise run test` runs `tests/unit.sh` (the release promotion, the request body size and the annotation limit, no stack), then every entry point, and the pipe in its image, against a local rFabric stack (`tests/run.sh`): it creates its own workspace with the suites and candidate it runs, and deletes it at the end. `scripts/set-version.sh <version>` pins a release.
 
-`.github/workflows/image.yml` publishes `public.ecr.aws/rfabric/cli:<version>` for each stable release, then `scripts/promote.sh <version>` moves the git tag `v<major>.<minor>`, then the image tag `<major>.<minor>`, to the newest stable patch of the line whose image exists: that release or a newer one; a reference already there stays. If that release's own image cannot be read, the promotion fails and moves nothing. GitHub may cancel a pending promotion of the line when another one queues; the next promotion completes it. The git tag is pushed with the repository secret `RELEASE_GITHUB_TOKEN`, a token with Contents and Workflows write on `rfabric/cli`: the job token cannot hold the workflows permission, and GitHub may refuse it a tag move to a commit that changes `.github/workflows/`. A refused push leaves both references where they were. A failed promotion is fixed by re-running the failed job (`Re-run failed jobs`; re-running the whole workflow stops at `Refuse an existing version tag`), or by the next release of the line.
+`.github/workflows/image.yml` publishes the public GitHub Container Registry package `ghcr.io/rfabric/cli:<version>` for each stable release with the job token, then `scripts/promote.sh <version>` moves the git tag `v<major>.<minor>`, then the image tag `<major>.<minor>`, to the newest stable patch of the line whose image exists: that release or a newer one; a reference already there stays. If that release's own image cannot be read, the promotion fails and moves nothing. GitHub may cancel a pending promotion of the line when another one queues; the next promotion completes it. The git tag is pushed with the repository secret `RELEASE_GITHUB_TOKEN`, a token with Contents and Workflows write on `rfabric/cli`: the job token cannot hold the workflows permission, and GitHub may refuse it a tag move to a commit that changes `.github/workflows/`. A refused push leaves both references where they were. A failed promotion is fixed by re-running the failed job (`Re-run failed jobs`; re-running the whole workflow stops at `Refuse an existing version tag`), or by the next release of the line.

@@ -1,4 +1,4 @@
-# public.ecr.aws/rfabric/cli:<version>: the pinned rfabric CLI and the CI wrapper scripts; the
+# ghcr.io/rfabric/cli:<version>: the pinned rfabric CLI and the CI wrapper scripts; the
 # Bitbucket pipe (ENTRYPOINT) and the GitLab template's job image (entrypoint: [""]).
 #
 #   docker buildx build --platform linux/amd64,linux/arm64 --build-arg RFABRIC_VERSION=<version> .

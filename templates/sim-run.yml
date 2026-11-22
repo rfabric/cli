@@ -84,7 +84,7 @@ spec:
 rfabric-sim-run:
   stage: $[[ inputs.stage ]]
   image:
-    name: public.ecr.aws/rfabric/cli:$[[ inputs.cli-version ]]
+    name: ghcr.io/rfabric/cli:$[[ inputs.cli-version ]]
     entrypoint: [""]
   id_tokens:
     RFABRIC_ID_TOKEN:

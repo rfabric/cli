@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bitbucket pipe entry point: the ENTRYPOINT of public.ecr.aws/rfabric/cli (pipe.yml).
+# Bitbucket pipe entry point: the ENTRYPOINT of ghcr.io/rfabric/cli (pipe.yml).
 #
 # Runs the suite (sim-run.sh) with the JUnit report under test-results/rfabric/ of the clone
 # directory (Bitbucket's test reporting picks it up), writes the outputs to

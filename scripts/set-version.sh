@@ -27,5 +27,5 @@ stamp "$root/templates/sim-run.yml" \
   "/^    cli-version:/,/^      default:/ s/^(      default: ).*/\\1\"$version\"/" \
   "      default: \"$version\""
 stamp "$root/pipe.yml" \
-  "s#^(image: public\\.ecr\\.aws/rfabric/cli:).*#\\1$version#" \
-  "image: public.ecr.aws/rfabric/cli:$version"
+  "s#^(image: ghcr\\.io/rfabric/cli:).*#\\1$version#" \
+  "image: ghcr.io/rfabric/cli:$version"
