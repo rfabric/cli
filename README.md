@@ -94,7 +94,7 @@ With `--wait` the command prints the report summary, writes `--junit` and `--mar
 
 `rfabric agent` starts the rFabric agent: a coding agent in your terminal that does what you may do on rFabric, as you, through the rFabric MCP server of the active profile, and asks you before every change. It has no shell unless you start it with `--with-shell`; its file tools stay inside the directory you start it in, and it moves file bytes only to upload and download URLs that rFabric issued in the session. Start it in a project directory: it refuses your home directory, a filesystem root, the CLI's configuration and cache directories, a directory whose `.env` or `.env.*` sets `OMP_*` or `PI_*` keys, and a directory whose `.omp/tools/` or `.omp/plugins/` holds modules (the agent would run them).
 
-With `--with-shell` the agent can also run shell commands, and asks you before each one. An approved command runs as you: it can read any file you can, including the agent's rFabric sign-in, and reach any network, so approve only commands you would run yourself.
+With `--with-shell` the agent can also run shell commands, so it can do the whole task for you. Every command asks first. An approved command runs as you, in your own environment: your signed-in `rfabric` CLI, Docker, cloud CLIs, git and SSH work as in your terminal. It can read any file you can and reach any network, so approve only commands you would run yourself.
 
 ```bash
 rfabric agent                              # interactive session for the active profile
