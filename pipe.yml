@@ -1,5 +1,5 @@
 name: rFabric sim run
-image: ghcr.io/rfabric/cli:0.1.14
+image: ghcr.io/rfabric/cli:0.1.15
 category: Testing
 description: Run rFabric simulation suites, one suite or a definition directory's, against a candidate image or artifact and gate the step on the verdict, with a Code Insights report, JUnit test results and rfabric-result.json.
 repository: https://github.com/rfabric/cli

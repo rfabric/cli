@@ -90,15 +90,30 @@ With `--wait` the command prints the report summary, writes `--junit` and `--mar
 
 `rfabric artifact-build register <repository>@sha256:<digest> [--weights <dir|file>] [--model <mdl_id>] [--model-name <name>] [--source-ref <ref>]` turns a built image into a ready `model_release` artifact in one idempotent command: it reads the manifest from the registry (with your Docker login) or, for a reference without a registry host, from the local Docker engine, uploads only what the build lacks and waits until the artifact is ready. The artifact is identified by the model, the image digest and the weights digest: a rerun returns it unchanged. The build attestation records `--source-ref`, else the CI commit, else the image reference.
 
+## rFabric agent
+
+`rfabric agent` starts the rFabric agent: a coding agent in your terminal that does what you may do on rFabric, as you, through the rFabric MCP server of the active profile, and asks you before every change. It has no shell; its file tools stay inside the directory you start it in, and it moves file bytes only to upload and download URLs that rFabric issued in the session. Start it in a project directory: it refuses your home directory, a filesystem root, the CLI's configuration and cache directories, a directory whose `.env` or `.env.*` sets `OMP_*` or `PI_*` keys, and a directory whose `.omp/tools/` or `.omp/plugins/` holds modules (the agent would run them).
+
+```bash
+rfabric agent                              # interactive session for the active profile
+rfabric agent --print "List my workspaces" # one prompt, no UI; changes are refused
+rfabric agent --continue                   # continue the last session; --resume [<id>] reopens one
+rfabric agent update                       # install the newest agent release
+rfabric agent update --version 0.1.0       # install exactly that release, older ones included
+```
+
+- The first `rfabric agent` downloads the newest agent release and checks it against its published SHA-256 checksums. The CLI itself does not grow. Once a day `rfabric agent` tells you when a newer release is available; `rfabric agent update` installs it.
+- The agent needs no `rfabric auth login`. Until you have signed in, it puts `/mcp reauth rfabric` in its prompt: press Enter and your browser opens to sign in to rFabric and authorize `rFabric agent`.
+- You bring your own model provider account: sign in with `/login` inside the agent, or keep the provider's API key (for example `ANTHROPIC_API_KEY`) in your environment.
+- Each CLI profile (`--profile`) has its own agent sessions, rFabric sign-in and model provider sign-in. `rfabric doctor` reports the installed agent.
+
 ## Coding agents
 
 rFabric runs a remote [Model Context Protocol](https://modelcontextprotocol.io) server at `https://api.rfabric.io/mcp`. On first use your agent opens the browser for you to sign in to rFabric with OAuth and authorize it. Register it with your agent, e.g. `claude mcp add --transport http rfabric https://api.rfabric.io/mcp`.
 
 Its three tools - `search_operations`, `describe_operation` and `call_operation` - reach every rFabric API operation.
 
-Agent skills in [`skills/`](skills) teach an agent a workflow with the CLI and the MCP tools:
-
-- [`sim-asset-build`](skills/sim-asset-build/SKILL.md) - sim asset builds: from a prompt and a robot to reviewed, qualified simulation assets, and the robot models they need, imported from the asset catalog or a GitHub or Hugging Face repository.
+Agent skills teach an agent rFabric workflows that span several operations, such as `sim-asset-build` (from a prompt and a robot to reviewed, qualified simulation assets). They live in [rfabric/skills](https://github.com/rfabric/skills), whose plugin `rfabric` gives Claude Code and Codex the skills and the `rfabric` MCP server in one install. The rFabric agent ships with them.
 
 ## Documentation
 
