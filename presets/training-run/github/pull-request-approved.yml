@@ -1,0 +1,68 @@
+# rFabric training preset: a pull request a maintainer approves for training. Adding the label
+# train (only users with triage or write access can label) builds the trainer image from the pull
+# request's head commit and launches a short, step-capped training run in the pull request
+# workspace; labelling again replaces the earlier run. A pull request from a fork is skipped: its
+# job gets neither the registry nor the identity token. Copy to .github/workflows/; ADAPT marks
+# what to change. Repository variables: TRAINING_PULL_REQUEST_CLIENT_ID (a credential of the pull
+# request workspace), TRAINING_PULL_REQUEST_WORKSPACE_ID, TRAINING_PULL_REQUEST_EXPERIMENT_ID,
+# TRAINING_PULL_REQUEST_DATASET_VERSIONS. Environment gpu-training: its required reviewers approve
+# before GPU spend.
+name: Train (approved pull request)
+on:
+  pull_request:
+    types: [labeled]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: github.event.label.name == 'train' && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.repository.outputs.name }}@${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      # ghcr.io takes lowercase repository names only.
+      - id: repository
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}/trainer" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      # The trainer image, pushed and passed on by digest. ADAPT: context and Dockerfile.
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ steps.repository.outputs.name }}:${{ github.event.pull_request.head.sha }}
+
+  train:
+    needs: build
+    runs-on: ubuntu-latest
+    # Required reviewers on this environment approve the run before GPU spend.
+    environment: gpu-training
+    permissions:
+      contents: read
+      id-token: write # the identity token the CLI exchanges
+      pull-requests: write # the pull request comment
+    steps:
+      - uses: rfabric/cli/training-run@v0.1
+        with:
+          launch-template: trainer-pull-request # ADAPT: the short, step-capped template
+          experiment: ${{ vars.TRAINING_PULL_REQUEST_EXPERIMENT_ID }}
+          dataset-versions: ${{ vars.TRAINING_PULL_REQUEST_DATASET_VERSIONS }}
+          workspace: ${{ vars.TRAINING_PULL_REQUEST_WORKSPACE_ID }}
+          image: ${{ needs.build.outputs.image }}
+          # The commit the image was built from: the pull request's head commit (the build job's checkout).
+          code-version: ${{ github.event.pull_request.head.sha }}
+          replace-previous: "true"
+          client-id: ${{ vars.TRAINING_PULL_REQUEST_CLIENT_ID }}
+          pull-request-client-id: ${{ vars.TRAINING_PULL_REQUEST_CLIENT_ID }}

@@ -1,27 +1,45 @@
 #!/usr/bin/env bash
-# GitLab template plumbing (templates/sim-run.yml). Subcommands:
+# GitLab template plumbing (templates/sim-run.yml, templates/training-run.yml). Subcommands; the
+# second argument is the run script (ci-job.sh): sim-run (the default) or training-run:
 #
-#   gitlab.sh run     script: run the suite or the definition directory (sim-run.sh) into
-#                     rfabric-sim-run/; exits with the step's code
-#   gitlab.sh after   after_script, also after a cancel: GitLab does not always signal the
-#                     job's process, so a canceled job (CI_JOB_STATUS=canceled) cancels the
-#                     blocking evaluation jobs here; then the dotenv outputs and, with
-#                     RFABRIC_GITLAB_TOKEN on a merge request pipeline, the merge request note
+#   gitlab.sh run [run script]     script: run the run script (sim-run.sh: the suite or the
+#                                  definition directory; training-run.sh: the training run) into
+#                                  rfabric-<run script>/; exits with the step's code
+#   gitlab.sh after [run script]   after_script, also after a cancel: GitLab does not always
+#                                  signal the job's process, so a canceled job
+#                                  (CI_JOB_STATUS=canceled) cancels what the run launched here;
+#                                  then the dotenv outputs and, with RFABRIC_GITLAB_TOKEN on a
+#                                  merge request pipeline, the merge request note
 #
-# Reads the inputs as RFABRIC_* variables (sim-run.sh) and GitLab's predefined CI_* variables.
+# Reads the inputs as RFABRIC_* variables (the run script) and GitLab's predefined CI_*
+# variables.
 
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=sim-run.sh
-source "$here/sim-run.sh"
+case ${2:-sim-run} in
+  sim-run)
+    # shellcheck source=sim-run.sh
+    source "$here/sim-run.sh"
+    ;;
+  training-run)
+    # shellcheck source=training-run.sh
+    source "$here/training-run.sh"
+    ;;
+  *)
+    echo "usage: gitlab.sh run|after [sim-run|training-run]" >&2
+    exit 2
+    ;;
+esac
 
-dir="${CI_PROJECT_DIR:-.}/rfabric-sim-run"
+dir="${CI_PROJECT_DIR:-.}/rfabric-$run_script"
 
-# detect_run: the run's event for sim-run.sh. The base branch defaults to the project's default
+# detect_run: the run's event (ci-job.sh). The base branch defaults to the project's default
 # branch (CI_DEFAULT_BRANCH); a merge request pipeline is a pull request, any other pipeline on
-# the base branch a base-branch run. A merge request pipeline in the fork (the source project,
-# not the merge request's project) is a fork run; RFABRIC_ID_TOKEN is the identity token.
+# the base branch a base-branch run. A merge request from a fork is a fork run, whatever
+# credential the job holds: its pipeline in the fork (CI_PROJECT_ID is not the merge request's
+# project), or in the merge request's project (the source project CI_MERGE_REQUEST_SOURCE_PROJECT_ID
+# is not the merge request's project). RFABRIC_ID_TOKEN is the identity token.
 detect_run() {
   base_branch=${RFABRIC_BASE_BRANCH:-${CI_DEFAULT_BRANCH:-}}
   if [[ -n ${CI_MERGE_REQUEST_IID:-} ]]; then
@@ -29,7 +47,10 @@ detect_run() {
   elif [[ -n $base_branch && ${CI_COMMIT_BRANCH:-} == "$base_branch" ]]; then
     run_event=base_branch
   fi
-  if [[ -n ${CI_MERGE_REQUEST_PROJECT_ID:-} && ${CI_PROJECT_ID:-} != "$CI_MERGE_REQUEST_PROJECT_ID" ]]; then
+  if [[ -n ${CI_MERGE_REQUEST_PROJECT_ID:-} ]] && {
+    [[ ${CI_PROJECT_ID:-} != "$CI_MERGE_REQUEST_PROJECT_ID" ]] \
+      || [[ -n ${CI_MERGE_REQUEST_SOURCE_PROJECT_ID:-} && $CI_MERGE_REQUEST_SOURCE_PROJECT_ID != "$CI_MERGE_REQUEST_PROJECT_ID" ]]
+  }; then
     fork_run=true
   fi
   [[ -n ${RFABRIC_ID_TOKEN:-} ]] && identity_token=true
@@ -38,7 +59,7 @@ detect_run() {
 
 run() {
   detect_run
-  sim_run "$dir"
+  ci_run "$dir"
   exit $?
 }
 
@@ -74,22 +95,21 @@ note() {
 }
 
 after() {
-  local job_id name variable
+  local name variable
   # No exit-code file: the job was canceled before the CLI ended the wait.
-  if [[ ${CI_JOB_STATUS:-} == canceled && -s $dir/job-id && ! -f $dir/exit-code ]]; then
+  if [[ ${CI_JOB_STATUS:-} == canceled && ! -f $dir/exit-code ]]; then
     # after_script is a new shell: the cancel signs in with the client id the run used.
     detect_run
     use_pull_request_client_id
-    while IFS= read -r job_id; do
-      forwarding rfabric evaluation-job cancel "$job_id" --output json > /dev/null
-    done < <(sort -u "$dir/job-id")
+    cancel_launched "$dir"
   fi
   [[ -f $dir/outputs.json ]] || return 0
-  # dotenv takes no JSON value: the suites output stays in outputs.json.
-  for name in job-id report-id conclusion operational-classification job-url artifact-id; do
+  # dotenv takes no JSON value: a JSON output (suites) stays in outputs.json.
+  while IFS= read -r name; do
+    jq -e --arg name "$name" '.[$name] | type == "string"' "$dir/outputs.json" > /dev/null 2>&1 || continue
     variable="RFABRIC_$(tr 'a-z-' 'A-Z_' <<< "$name")"
     printf '%s=%s\n' "$variable" "$(output_value "$dir" "$name")"
-  done > "$dir/outputs.env"
+  done < <(run_outputs) > "$dir/outputs.env"
   if [[ -n ${RFABRIC_GITLAB_TOKEN:-} && -n ${CI_MERGE_REQUEST_IID:-} ]]; then
     note
   fi
@@ -99,7 +119,7 @@ after() {
 case ${1:-} in
   run | after) "$1" ;;
   *)
-    echo "usage: gitlab.sh run|after" >&2
+    echo "usage: gitlab.sh run|after [sim-run|training-run]" >&2
     exit 2
     ;;
 esac

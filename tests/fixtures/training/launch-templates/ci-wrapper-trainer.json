@@ -1,0 +1,18 @@
+{
+  "formatVersion": 2,
+  "kind": "launch_template",
+  "slug": "ci-wrapper-trainer",
+  "name": "CI wrapper test trainer",
+  "description": "The rsi fixture trainer, a few iterations on the local Docker pool cpu-standard (tests/run.sh).",
+  "poolRef": "cpu-standard",
+  "defaultConfig": { "command": ["python", "/opt/trainer/train.py"], "iterations": 2 },
+  "defaultComputeConfig": {
+    "image": "rfabric-example-rsi-fixture-trainer@sha256:c824a1876e6e9f91b64e1ed099f0dbd757955aedfafd1b741e2dbdb568f9c64f",
+    "vcpu": 1,
+    "memoryMiB": 1024,
+    "gpuCount": 0,
+    "diskGiB": 1,
+    "nodes": 1
+  },
+  "guardrails": { "allowedOverrideKeys": ["image", "iterations"], "maxGpuCount": 0, "maxRuntimeS": 1800 }
+}

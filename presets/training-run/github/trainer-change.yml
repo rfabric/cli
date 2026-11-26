@@ -1,0 +1,68 @@
+# rFabric training preset: a push to the base branch that changes the trainer (its code, config,
+# Dockerfile or lockfile, and the launch template files under training/). It builds the trainer
+# image, applies training/ with that image and commit for the launch template (so the template
+# runs the new trainer from now on), then launches a training run on it. Copy to
+# .github/workflows/; ADAPT marks what to change. Repository variables: TRAINING_CLIENT_ID,
+# TRAINING_EXPERIMENT_ID, TRAINING_DATASET_VERSIONS. Environment gpu-training: its required
+# reviewers approve before GPU spend.
+name: Train (trainer change)
+on:
+  push:
+    branches: [main] # ADAPT: the base branch
+    paths: # ADAPT: the trainer's paths
+      - trainer/**
+      - configs/**
+      - training/**
+      - Dockerfile
+      - uv.lock
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.repository.outputs.name }}@${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v5
+      # ghcr.io takes lowercase repository names only.
+      - id: repository
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}/trainer" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      # The trainer image, pushed and passed on by digest. ADAPT: context and Dockerfile.
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ steps.repository.outputs.name }}:${{ github.sha }}
+
+  train:
+    needs: build
+    runs-on: ubuntu-latest
+    # Required reviewers on this environment approve the run before GPU spend.
+    environment: gpu-training
+    permissions:
+      contents: read
+      id-token: write # the identity token the CLI exchanges
+    steps:
+      # The action applies training/ from the job's working tree: check out the pushed commit.
+      - uses: actions/checkout@v5
+      - uses: rfabric/cli/training-run@v0.1
+        with:
+          launch-template: trainer # ADAPT: the slug in training/
+          experiment: ${{ vars.TRAINING_EXPERIMENT_ID }}
+          dataset-versions: ${{ vars.TRAINING_DATASET_VERSIONS }}
+          dir: training
+          image: ${{ needs.build.outputs.image }}
+          # The commit the image was built from: the pushed commit, GITHUB_SHA.
+          code-version: ${{ github.sha }}
+          client-id: ${{ vars.TRAINING_CLIENT_ID }}

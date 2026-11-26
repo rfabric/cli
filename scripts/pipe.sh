@@ -1,29 +1,36 @@
 #!/usr/bin/env bash
 # Bitbucket pipe entry point: the ENTRYPOINT of ghcr.io/rfabric/cli (pipe.yml).
 #
-# Runs the suite or the definition directory (sim-run.sh) with the JUnit reports under
-# test-results/rfabric/ of the clone directory (Bitbucket's test reporting picks them up),
-# writes the outputs to rfabric-result.json in the clone directory, posts a Code Insights report
-# (and an annotation per failed case, up to Bitbucket's 1000 per report) on BITBUCKET_COMMIT,
-# with RFABRIC_BITBUCKET_TOKEN on a pull request pipeline posts one new pull request comment per
+# The run script (ci-job.sh): training-run.sh when RFABRIC_LAUNCH_TEMPLATE is set, else
+# sim-run.sh. Runs it with its result directory test-results/rfabric/ of the clone directory
+# (Bitbucket's test reporting picks up a sim run's JUnit reports there), writes the outputs to
+# rfabric-result.json in the clone directory, for a sim run posts a Code Insights report (and
+# an annotation per failed case, up to Bitbucket's 1000 per report) on BITBUCKET_COMMIT, with
+# RFABRIC_BITBUCKET_TOKEN on a pull request pipeline posts one new pull request comment per
 # run, and exits with the step's code. `source pipe.sh` defines the functions only
 # (tests/unit.sh).
 #
 # Signals: this script is the container's first process; a SIGTERM or SIGINT it receives
-# reaches the CLI, which cancels the job. Bitbucket documents no signal or grace period for a
-# stopped step and runs no after-script then: the wall deadline bounds the job.
+# reaches the CLI, which cancels the job or the waited training run. Bitbucket documents no
+# signal or grace period for a stopped step and runs no after-script then: the wall deadline
+# (sim) bounds the job.
 #
-# Reads the pipe variables (RFABRIC_* as in sim-run.sh; RFABRIC_WALL_DEADLINE defaults to
-# 7200 there), Bitbucket's BITBUCKET_* variables (secretless: BITBUCKET_STEP_OIDC_TOKEN, read
-# by the CLI), and RFABRIC_BITBUCKET_TOKEN. RFABRIC_BITBUCKET_PROXY (the Pipelines API proxy,
-# default http://host.docker.internal:29418) and RFABRIC_BITBUCKET_API_URL (default
-# https://api.bitbucket.org/2.0) exist for tests.
+# Reads the pipe variables (RFABRIC_* as in the run script; RFABRIC_WALL_DEADLINE defaults
+# to 7200 in sim-run.sh), Bitbucket's BITBUCKET_* variables (secretless:
+# BITBUCKET_STEP_OIDC_TOKEN, read by the CLI), and RFABRIC_BITBUCKET_TOKEN.
+# RFABRIC_BITBUCKET_PROXY (the Pipelines API proxy, default http://host.docker.internal:29418)
+# and RFABRIC_BITBUCKET_API_URL (default https://api.bitbucket.org/2.0) exist for tests.
 
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=sim-run.sh
-source "$here/sim-run.sh"
+if [[ -n ${RFABRIC_LAUNCH_TEMPLATE:-} ]]; then
+  # shellcheck source=training-run.sh
+  source "$here/training-run.sh"
+else
+  # shellcheck source=sim-run.sh
+  source "$here/sim-run.sh"
+fi
 
 clone=${BITBUCKET_CLONE_DIR:-$PWD}
 dir="$clone/test-results/rfabric"
@@ -32,10 +39,13 @@ api_url=${RFABRIC_BITBUCKET_API_URL:-https://api.bitbucket.org/2.0}
 # Bitbucket's limit of annotations per report.
 annotation_limit=1000
 
-# detect_run: the run's event for sim-run.sh. Bitbucket gives a step no default branch: the
+# detect_run: the run's event (ci-job.sh). Bitbucket gives a step no default branch: the
 # base branch is RFABRIC_BASE_BRANCH, else main. A pull request pipeline is a pull request,
 # any other pipeline on the base branch a base-branch run. A pull request pipeline without the
-# identity token (as in a fork) and without RFABRIC_CLIENT_SECRET gets the fork notice.
+# identity token (as in a fork) and without RFABRIC_CLIENT_SECRET gets the fork notice. Bitbucket
+# names no source repository of a pull request, so a fork is not detected from its variables: a
+# fork's pipeline runs in the fork, without this repository's secured variables, and its identity
+# token carries the fork's repositoryUuid, which no credential trust of this repository admits.
 detect_run() {
   base_branch=${RFABRIC_BASE_BRANCH:-main}
   if [[ -n ${BITBUCKET_PR_ID:-} ]]; then
@@ -154,12 +164,13 @@ comment() {
 
 cd "$clone" || exit 1
 detect_run
-sim_run "$dir"
+ci_run "$dir"
 code=$?
 cp "$dir/outputs.json" "$clone/rfabric-result.json"
-# Without a suite or definition directory (a usage error) there is nothing to report on.
-if [[ -n ${RFABRIC_SUITE:-}${RFABRIC_DIR:-} && -n ${BITBUCKET_COMMIT:-} && -n ${BITBUCKET_REPO_FULL_NAME:-} ]]; then
-  insights "$code"
+# Without what the run checks (a usage error) there is nothing to report on. Code Insights
+# carries a sim run's verdict.
+if [[ -n $(run_key) && -n ${BITBUCKET_COMMIT:-} && -n ${BITBUCKET_REPO_FULL_NAME:-} ]]; then
+  [[ $run_script == sim-run ]] && insights "$code"
   if [[ -n ${RFABRIC_BITBUCKET_TOKEN:-} && -n ${BITBUCKET_PR_ID:-} ]]; then
     comment
   fi

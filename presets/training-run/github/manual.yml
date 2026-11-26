@@ -1,0 +1,75 @@
+# rFabric training preset: manual dispatch. Run it from the Actions tab (Run workflow) with the
+# launch template, dataset version and overrides; it builds the trainer image from the chosen
+# ref, then launches a training run on it. Copy to .github/workflows/; ADAPT marks what to change.
+# Repository variables: TRAINING_CLIENT_ID, TRAINING_EXPERIMENT_ID. Environment gpu-training: its
+# required reviewers approve before GPU spend.
+name: Train (manual)
+on:
+  workflow_dispatch:
+    inputs:
+      launch-template:
+        description: Launch template slug
+        required: true
+        default: trainer
+      dataset-version:
+        description: Dataset version id(s), comma separated
+        required: false
+        default: ""
+      config-overrides:
+        description: Training config overrides, JSON object
+        required: false
+        default: ""
+      compute-overrides:
+        description: Compute overrides, JSON object
+        required: false
+        default: ""
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.repository.outputs.name }}@${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v5
+      # ghcr.io takes lowercase repository names only.
+      - id: repository
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}/trainer" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      # The trainer image, pushed and passed on by digest. ADAPT: context and Dockerfile.
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ steps.repository.outputs.name }}:${{ github.sha }}
+
+  train:
+    needs: build
+    runs-on: ubuntu-latest
+    # Required reviewers on this environment approve the run before GPU spend.
+    environment: gpu-training
+    permissions:
+      contents: read
+      id-token: write # the identity token the CLI exchanges
+    steps:
+      - uses: rfabric/cli/training-run@v0.1
+        with:
+          launch-template: ${{ inputs.launch-template }}
+          experiment: ${{ vars.TRAINING_EXPERIMENT_ID }}
+          dataset-versions: ${{ inputs.dataset-version }}
+          config-overrides: ${{ inputs.config-overrides }}
+          compute-overrides: ${{ inputs.compute-overrides }}
+          image: ${{ needs.build.outputs.image }}
+          # The commit the image was built from: the dispatched ref's commit, GITHUB_SHA.
+          code-version: ${{ github.sha }}
+          client-id: ${{ vars.TRAINING_CLIENT_ID }}

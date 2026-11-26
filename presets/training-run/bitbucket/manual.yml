@@ -1,0 +1,51 @@
+# rFabric training preset: manual run. Run the custom pipeline train (Pipelines > Run pipeline)
+# with the launch template, dataset version and overrides; it builds the trainer image from the
+# chosen branch, then launches a training run on it. Copy into bitbucket-pipelines.yml; ADAPT
+# marks what to change. The commit the image was built from is the pipeline's commit,
+# BITBUCKET_COMMIT.
+# Repository variables: TRAINING_CLIENT_ID, TRAINING_EXPERIMENT_ID,
+# DOCKER_USERNAME, DOCKER_PASSWORD.
+# Sign-in: a manual run off the base branch has no base-branch claim, so the step declares the
+# deployment environment training and the base-branch credential trusts its UUID
+# (deploymentEnvironmentUuid). Create the deployment environment training (Repository settings >
+# Deployments), allow only maintainers to deploy to it (Bitbucket Premium custom deployment
+# permissions), and copy its UUID, braces included, into the credential trust. Without that
+# restriction any branch with a deployment: training step signs in as the base-branch credential.
+definitions:
+  steps:
+    - step: &train
+        name: Build the trainer and launch a training run
+        services: [docker]
+        deployment: training
+        oidc:
+          audiences:
+            - https://auth.rfabric.io # ADAPT: the trust's audience
+        script:
+          # The trainer image, pushed and passed on by digest. ADAPT: registry, repository,
+          # Dockerfile; DOCKER_USERNAME and DOCKER_PASSWORD are secured repository variables.
+          - export TRAINER_REPOSITORY=docker.io/acme/trainer
+          - echo "$DOCKER_PASSWORD" | docker login --username "$DOCKER_USERNAME" --password-stdin docker.io
+          - docker build --file Dockerfile --tag "$TRAINER_REPOSITORY:$BITBUCKET_COMMIT" .
+          - docker push "$TRAINER_REPOSITORY:$BITBUCKET_COMMIT"
+          - export TRAINER_IMAGE=$(docker inspect --format '{{index .RepoDigests 0}}' "$TRAINER_REPOSITORY:$BITBUCKET_COMMIT")
+          - pipe: docker://ghcr.io/rfabric/cli:0.1
+            variables:
+              RFABRIC_LAUNCH_TEMPLATE: $LAUNCH_TEMPLATE
+              RFABRIC_EXPERIMENT: $TRAINING_EXPERIMENT_ID
+              RFABRIC_DATASET_VERSIONS: $DATASET_VERSION
+              RFABRIC_CONFIG_OVERRIDES: $CONFIG_OVERRIDES
+              RFABRIC_COMPUTE_OVERRIDES: $COMPUTE_OVERRIDES
+              RFABRIC_CLIENT_ID: $TRAINING_CLIENT_ID
+              RFABRIC_IMAGE: $TRAINER_IMAGE
+              RFABRIC_CODE_VERSION: $BITBUCKET_COMMIT
+
+pipelines:
+  custom:
+    train:
+      - variables:
+          - name: LAUNCH_TEMPLATE
+            default: trainer
+          - name: DATASET_VERSION
+          - name: CONFIG_OVERRIDES
+          - name: COMPUTE_OVERRIDES
+      - step: *train

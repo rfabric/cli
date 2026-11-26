@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Checks of the script logic that needs no stack (`mise run test` runs it before tests/run.sh):
 # the release line promotion (scripts/promote.sh) against a local git origin and a simulated
-# registry, a request body past the size limit of one argument (scripts/sim-run.sh api_call),
-# the Bitbucket annotation limit (scripts/pipe.sh) with the Code Insights calls recorded, and the
+# registry, a request body past the size limit of one argument (scripts/ci-job.sh api_call),
+# the Bitbucket annotation limit (scripts/pipe.sh) with the Code Insights calls recorded, the
 # commands each wrapper entry point runs for a definition directory on each event (a pull
 # request with unchanged or changed definitions, a base-branch push, a fork pull request, an
-# empty suite selection, apply preview problems) and the client id they sign in with, in
-# simulated GitHub, GitLab and Bitbucket environments, with the CLI and curl stubbed. Needs git
-# and jq.
+# empty suite selection, apply preview problems), the exact training commands per event (a pull
+# request with and without a definition directory, a fork, a base-branch push with image and
+# code version, a tag push, a manual run) and the outputs they write, and the client id each
+# signs in with, in simulated GitHub, GitLab and Bitbucket environments, with the CLI and curl
+# stubbed. Needs git and jq.
 set -uo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -140,13 +142,13 @@ promote 0.1 > /dev/null 2>&1
 check "an argument that is not <major>.<minor>.<patch> exits 2" equal "$?" 2
 
 # ------------------------------------------------------------------------------------------
-say "sim-run.sh: a request body past the size limit of one argument"
+say "ci-job.sh: a request body past the size limit of one argument"
 # curl records the body it reads; past 131072 bytes it would not start with the body as an argument.
 printf '#!/usr/bin/env bash\ncat > "%s/curl-body"\nprintf "{}\\n200"\n' "$work" > "$work/bin/curl"
 chmod +x "$work/bin/curl"
 large=$(jq -cn '[range(20000) | {external_id: "evr_\(.)"}]')
-# shellcheck source=../scripts/sim-run.sh
-(source "$root/scripts/sim-run.sh" && PATH="$work/bin:$PATH" api_call POST http://api.example/x "$large" > /dev/null)
+# shellcheck source=../scripts/ci-job.sh
+(source "$root/scripts/ci-job.sh" && PATH="$work/bin:$PATH" api_call POST http://api.example/x "$large" > /dev/null)
 check "a ${#large}-byte body is sent" equal "$?" 0
 check "curl receives it whole" equal "$(cat "$work/curl-body")" "$large"
 
@@ -212,7 +214,7 @@ value() { # value <flag> <args...>: the value after the flag
 markdown=$(value --markdown "$@")
 case "$1 $2" in
   "artifact-build register") echo '{"id": "art_01JZ00000000000000000000IM"}' ;;
-  "eval apply")
+  "eval apply" | "training apply")
     title="apply"
     [[ " $* " == *" --preview "* ]] && title="apply preview"
     printf '# Definition directory - %s\n\n%s\n' "$title" "$(jq -r '.problems[]? | "- problem: \(.message)"' "$FAKE/definitions.json")" > "$markdown"
@@ -237,6 +239,17 @@ case "$1 $2" in
     printf '# Test run - not yet approved\n\n| `put-away@3` | exit %s |\n' "${FAKE_TEST_RUN_CODE:-0}" > "$markdown"
     exit "${FAKE_TEST_RUN_CODE:-0}"
     ;;
+  "training run")
+    echo "✓ Training run run_01JZ0000000000000000000001 (queued) https://app.example/runs/run_01JZ0000000000000000000001" >&2
+    printf '# Training run\n\n`run_01JZ0000000000000000000001` launched\n' > "$markdown"
+    if [[ " $* " == *" --wait "* ]]; then
+      echo '{"id": "run_01JZ0000000000000000000001", "status": "completed", "appUrl": "https://app.example/runs/run_01JZ0000000000000000000001",
+        "bestCheckpoint": {"id": "ckpt_01JZ0000000000000000000001", "step": 400, "metric": "train/loss", "value": 0.1}}'
+    else
+      echo '{"id": "run_01JZ0000000000000000000001", "status": "queued", "appUrl": "https://app.example/runs/run_01JZ0000000000000000000001", "bestCheckpoint": null}'
+    fi
+    exit "${FAKE_TRAINING_CODE:-0}"
+    ;;
   "evaluation-job get") printf '{"appUrl": "https://app.example/jobs/%s"}\n' "$3" ;;
 esac
 exit 0
@@ -254,24 +267,35 @@ definitions() {
 }
 
 # scenario <provider> <event> <name> [VARIABLE=value...]: runs the provider's entry points for
-# the definition directory eval in a fresh environment holding only that provider's variables
-# and the given ones; sets code (the step's exit code), calls (the stub CLI's commands: the
-# subcommand plus --preview, --changed, --suite, --baseline and --base-branch with their values,
-# sorted, one per line, `evaluation-job get` left out), client_ids (the distinct client ids the
-# CLI calls signed in with, space separated) and result (the run's result directory).
+# the run script scenario_run_script (sim-run: the definition directory eval; training-run: the launch
+# template trainer, through the training entry points) in a fresh environment holding only that
+# provider's variables and the given ones; sets code (the step's exit code), calls (the stub
+# CLI's commands: the subcommand plus --preview, --changed, --suite, --baseline and
+# --base-branch with their values, sorted, one per line, `evaluation-job get` left out), argv
+# (every CLI call whole, in order, the result directory as <dir>), client_ids (the distinct
+# client ids the CLI calls signed in with, space separated) and result (the run's result
+# directory).
+scenario_run_script=sim-run
 scenario() {
-  local provider=$1 event=$2 home="$work/$1-$3" variables=()
+  local provider=$1 event=$2 home="$work/$1-$3" variables=() run_script_argument=()
   shift 3
   mkdir -p "$home/runner" "$home/repo"
   export FAKE=$home
   : > "$home/calls"
   : > "$home/client-ids"
   [[ -s $home/definitions.json ]] || definitions "$home/definitions.json" unchanged
-  variables=(PATH="$work/stub-bin:$PATH" HOME="$HOME" FAKE="$home" RFABRIC_DIR=eval RFABRIC_CLIENT_ID=rf_svc_test
-    RFABRIC_CANDIDATE=art_01JZ00000000000000000000CA RFABRIC_WALL_DEADLINE=600)
+  variables=(PATH="$work/stub-bin:$PATH" HOME="$HOME" FAKE="$home" RFABRIC_CLIENT_ID=rf_svc_test)
+  case $scenario_run_script in
+    sim-run) variables+=(RFABRIC_DIR=eval RFABRIC_CANDIDATE=art_01JZ00000000000000000000CA RFABRIC_WALL_DEADLINE=600) ;;
+    training-run)
+      variables+=(RFABRIC_LAUNCH_TEMPLATE=trainer RFABRIC_EXPERIMENT=exp_01JZ00000000000000000000EX)
+      run_script_argument=(training-run)
+      ;;
+  esac
   case $provider:$event in
     github:*)
-      printf '{"repository": {"default_branch": "main"}, "pull_request": {"number": 42}}' > "$home/event.json"
+      printf '{"repository": {"default_branch": "main", "full_name": "acme/robot"}, "pull_request": {"number": 42, "head": {"repo": {"full_name": "acme/robot"}}}}' \
+        > "$home/event.json"
       variables+=(GITHUB_ACTIONS=true GITHUB_REPOSITORY=acme/robot GITHUB_EVENT_PATH="$home/event.json"
         GITHUB_API_URL=http://github.invalid GITHUB_TOKEN=job-token RUNNER_TEMP="$home/runner"
         GITHUB_OUTPUT="$home/output" GITHUB_STEP_SUMMARY="$home/summary")
@@ -279,10 +303,37 @@ scenario() {
     github:pull_request) variables+=(GITHUB_EVENT_NAME=pull_request GITHUB_REF=refs/pull/42/merge ACTIONS_ID_TOKEN_REQUEST_URL=http://token.invalid) ;;
     github:fork) variables+=(GITHUB_EVENT_NAME=pull_request GITHUB_REF=refs/pull/42/merge) ;;
     github:push) variables+=(GITHUB_EVENT_NAME=push GITHUB_REF=refs/heads/main ACTIONS_ID_TOKEN_REQUEST_URL=http://token.invalid) ;;
+    github:tag) variables+=(GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/train/v1 ACTIONS_ID_TOKEN_REQUEST_URL=http://token.invalid) ;;
+    github:manual) variables+=(GITHUB_EVENT_NAME=workflow_dispatch GITHUB_REF=refs/heads/main ACTIONS_ID_TOKEN_REQUEST_URL=http://token.invalid) ;;
+    # A fork's pull request whose job holds a credential: client-secret on pull_request, the
+    # identity token on pull_request_target. The event payload names the fork as head repository.
+    github:fork-secret | github:fork-target | github:same-repository)
+      jq -n --arg head "$([[ $event == same-repository ]] && echo acme/robot || echo stranger/robot)" \
+        '{repository: {default_branch: "main", full_name: "acme/robot"}, pull_request: {number: 42, head: {repo: {full_name: $head}}}}' \
+        > "$home/event.json"
+      ;;&
+    github:fork-secret) variables+=(GITHUB_EVENT_NAME=pull_request GITHUB_REF=refs/pull/42/merge RFABRIC_CLIENT_SECRET=secret) ;;
+    github:fork-target) variables+=(GITHUB_EVENT_NAME=pull_request_target GITHUB_REF=refs/heads/main ACTIONS_ID_TOKEN_REQUEST_URL=http://token.invalid) ;;
+    github:same-repository) variables+=(GITHUB_EVENT_NAME=pull_request GITHUB_REF=refs/pull/42/merge ACTIONS_ID_TOKEN_REQUEST_URL=http://token.invalid) ;;
+    # A pull_request_target job holding the identity token whose payload proves nothing: missing,
+    # empty, malformed, or unreadable without jq (the payload names this repository then).
+    github:payload-missing | github:payload-empty | github:payload-malformed | github:payload-no-jq)
+      variables+=(GITHUB_EVENT_NAME=pull_request_target GITHUB_REF=refs/heads/main ACTIONS_ID_TOKEN_REQUEST_URL=http://token.invalid)
+      ;;&
+    github:payload-missing) variables+=(GITHUB_EVENT_PATH="$home/missing.json") ;;
+    github:payload-empty) : > "$home/event.json" ;;
+    github:payload-malformed) printf '{"repository": {"full_name": "acme/robot"' > "$home/event.json" ;;
+    github:payload-no-jq) variables+=(PATH="$work/no-jq-bin:$work/stub-bin:$PATH") ;;
     gitlab:*) variables+=(GITLAB_CI=true CI_PROJECT_DIR="$home/repo" CI_PROJECT_ID=4242 CI_DEFAULT_BRANCH=main) ;;&
     gitlab:pull_request) variables+=(CI_MERGE_REQUEST_IID=7 CI_MERGE_REQUEST_PROJECT_ID=4242 RFABRIC_ID_TOKEN=token) ;;
     gitlab:fork) variables+=(CI_PROJECT_ID=4343 CI_MERGE_REQUEST_IID=7 CI_MERGE_REQUEST_PROJECT_ID=4242 RFABRIC_ID_TOKEN=fork-token) ;;
+    # A fork's merge request pipeline run in the merge request's project, with the identity token
+    # and client-secret.
+    gitlab:fork-secret) variables+=(CI_MERGE_REQUEST_IID=7 CI_MERGE_REQUEST_PROJECT_ID=4242 CI_MERGE_REQUEST_SOURCE_PROJECT_ID=5151
+      RFABRIC_ID_TOKEN=token RFABRIC_CLIENT_SECRET=secret) ;;
     gitlab:push) variables+=(CI_COMMIT_BRANCH=main RFABRIC_ID_TOKEN=token) ;;
+    gitlab:tag) variables+=(CI_COMMIT_TAG=train/v1 RFABRIC_ID_TOKEN=token) ;;
+    gitlab:manual) variables+=(CI_PIPELINE_SOURCE=web CI_COMMIT_BRANCH=main RFABRIC_ID_TOKEN=token) ;;
     bitbucket:*)
       variables+=(BITBUCKET_CLONE_DIR="$home/repo" BITBUCKET_COMMIT=abc BITBUCKET_REPO_FULL_NAME=acme/robot
         RFABRIC_BITBUCKET_PROXY=http://proxy.invalid)
@@ -290,22 +341,24 @@ scenario() {
     bitbucket:pull_request) variables+=(BITBUCKET_PR_ID=5 BITBUCKET_BRANCH=feature BITBUCKET_STEP_OIDC_TOKEN=token) ;;
     bitbucket:fork) variables+=(BITBUCKET_PR_ID=5 BITBUCKET_BRANCH=feature) ;;
     bitbucket:push) variables+=(BITBUCKET_BRANCH=main BITBUCKET_STEP_OIDC_TOKEN=token) ;;
+    bitbucket:tag) variables+=(BITBUCKET_TAG=train/v1 BITBUCKET_STEP_OIDC_TOKEN=token) ;;
+    bitbucket:manual) variables+=(BITBUCKET_BRANCH=main BITBUCKET_STEP_OIDC_TOKEN=token) ;;
   esac
   variables+=("$@")
   case $provider in
     github)
       : > "$home/output"
-      env -i "${variables[@]}" "$root/scripts/github.sh" run > "$home/run.log" 2>&1
+      env -i "${variables[@]}" "$root/scripts/github.sh" run "${run_script_argument[@]}" > "$home/run.log" 2>&1
       code=$?
       result=$(sed -n 's/^dir=//p' "$home/output")
       env -i "${variables[@]}" RFABRIC_RESULT_DIR="$result" GITHUB_OUTPUT="$home/publish-output" \
-        "$root/scripts/github.sh" publish > "$home/publish.log" 2>&1
+        "$root/scripts/github.sh" publish "${run_script_argument[@]}" > "$home/publish.log" 2>&1
       ;;
     gitlab)
-      env -i "${variables[@]}" "$root/scripts/gitlab.sh" run > "$home/run.log" 2>&1
+      env -i "${variables[@]}" "$root/scripts/gitlab.sh" run "${run_script_argument[@]}" > "$home/run.log" 2>&1
       code=$?
-      env -i "${variables[@]}" CI_JOB_STATUS=success "$root/scripts/gitlab.sh" after > "$home/after.log" 2>&1
-      result="$home/repo/rfabric-sim-run"
+      env -i "${variables[@]}" CI_JOB_STATUS=success "$root/scripts/gitlab.sh" after "${run_script_argument[@]}" > "$home/after.log" 2>&1
+      result="$home/repo/rfabric-$scenario_run_script"
       ;;
     bitbucket)
       env -i "${variables[@]}" "$root/scripts/pipe.sh" > "$home/run.log" 2>&1
@@ -320,6 +373,7 @@ scenario() {
       if ($i == "--suite" || $i == "--baseline" || $i == "--base-branch" || $i == "--candidate") line = line " " $i " " $(i + 1)
     }
     print line }' "$home/calls" | sort)
+  argv=$(sed "s#$result#<dir>#g" "$home/calls")
   client_ids=$(sort -u "$home/client-ids" | paste -sd ' ' -)
 }
 summary() { cat "$result/summary.md"; }
@@ -408,6 +462,160 @@ check "GitLab: dotenv keeps the six outputs" equal "$(cut -d= -f1 "$work/gitlab-
   "RFABRIC_JOB_ID RFABRIC_REPORT_ID RFABRIC_CONCLUSION RFABRIC_OPERATIONAL_CLASSIFICATION RFABRIC_JOB_URL RFABRIC_ARTIFACT_ID "
 check "Bitbucket: rfabric-result.json holds the suites output" equal \
   "$(jq -r '.suites[0].jobId' "$work/bitbucket-unchanged/repo/rfabric-result.json")" evj_01JZ0000000000000000000001
+
+# ------------------------------------------------------------------------------------------
+say "wrappers: the training commands per event (stubbed CLI)"
+scenario_run_script=training-run
+run_line="training run trainer --experiment exp_01JZ00000000000000000000EX"
+image=ghcr.io/acme/trainer@sha256:4f2a
+for provider in github gitlab bitbucket; do
+  scenario "$provider" pull_request training-pull-request RFABRIC_PULL_REQUEST_CLIENT_ID=rf_svc_pull_request
+  check "$provider training pull request: training run only" equal "$argv" \
+    "$run_line --markdown <dir>/run.md --output json"
+  check "$provider training pull request: pull-request-client-id signs in" equal "$client_ids" rf_svc_pull_request
+  check "$provider training pull request: exit 0 (got $code)" equal "$code" 0
+  check "$provider training pull request: the outputs" equal \
+    "$(jq -c '{"run-id", status, "run-url", "best-checkpoint-id"}' "$result/outputs.json")" \
+    '{"run-id":"run_01JZ0000000000000000000001","status":"queued","run-url":"https://app.example/runs/run_01JZ0000000000000000000001","best-checkpoint-id":""}'
+  check "$provider training pull request: the launch line's run is recorded" equal "$(cat "$result/run-id")" run_01JZ0000000000000000000001
+  # shellcheck disable=SC2016 # the backticks are markdown
+  check "$provider training pull request: the summary is the CLI's markdown" contains "$(summary)" '`run_01JZ0000000000000000000001` launched'
+
+  scenario "$provider" pull_request training-pull-request-dir RFABRIC_DIR=training RFABRIC_PULL_REQUEST_CLIENT_ID=rf_svc_pull_request
+  check "$provider training pull request with dir: apply preview, then the run" equal "$argv" \
+    "training apply --dir training --preview --markdown <dir>/definitions.md --output json
+$run_line --markdown <dir>/run.md --output json"
+  check "$provider training pull request with dir: pull-request-client-id signs in" equal "$client_ids" rf_svc_pull_request
+
+  definitions "$work/$provider-training-problems/definitions.json" version problem
+  scenario "$provider" pull_request training-problems RFABRIC_DIR=training FAKE_DEFINITIONS_CODE=3
+  check "$provider training apply preview problems: no run" equal "$argv" \
+    "training apply --dir training --preview --markdown <dir>/definitions.md --output json"
+  check "$provider training apply preview problems: exit 3 (got $code)" equal "$code" 3
+  check "$provider training apply preview problems: the summary lists them" contains "$(summary)" "- problem: reference task@1 is not published"
+
+  scenario "$provider" fork training-fork RFABRIC_DIR=training
+  check "$provider training fork pull request: no CLI call" equal "$argv" ""
+  check "$provider training fork pull request: fails (got $code)" equal "$code" 1
+  check "$provider training fork pull request: the summary asks for a trusted run" contains "$(summary)" "A trusted run on the same commit is needed"
+
+  definitions "$work/$provider-training-base/definitions.json" version
+  scenario "$provider" push training-base RFABRIC_DIR=training RFABRIC_IMAGE=$image RFABRIC_CODE_VERSION=0123abc \
+    RFABRIC_PULL_REQUEST_CLIENT_ID=rf_svc_pull_request
+  check "$provider training base-branch push: apply with the image and code version, then the run on them" equal "$argv" \
+    "training apply --dir training --image trainer=$image --code-version 0123abc --markdown <dir>/definitions.md --output json
+$run_line --image $image --code-version 0123abc --markdown <dir>/run.md --output json"
+  check "$provider training base-branch push: client-id signs in" equal "$client_ids" rf_svc_test
+  check "$provider training base-branch push: summary: the run, then the applied change" equal \
+    "$(grep '^# ' <<< "$(summary)")" "$(printf '# Training run\n# Definition directory - apply')"
+
+  scenario "$provider" push training-base-image RFABRIC_DIR=training RFABRIC_IMAGE=$image
+  check "$provider training base-branch push, image without code version: neither command gets one" equal "$argv" \
+    "training apply --dir training --image trainer=$image --markdown <dir>/definitions.md --output json
+$run_line --image $image --markdown <dir>/run.md --output json"
+
+  scenario "$provider" tag training-tag RFABRIC_DIR=training RFABRIC_RUN_TAGS="git-tag=train/v1" RFABRIC_IMAGE=$image
+  check "$provider training tag push: the run only, with its tags" equal "$argv" \
+    "$run_line --tag git-tag=train/v1 --image $image --markdown <dir>/run.md --output json"
+
+  scenario "$provider" manual training-manual RFABRIC_DATASET_VERSIONS="dsv_01JZ0000000000000000000001,
+dsv_01JZ0000000000000000000002" RFABRIC_BASE_MODEL=mdl_01JZ0000000000000000000001 RFABRIC_CONFIG_OVERRIDES='{"lr":0.1}' \
+    RFABRIC_COMPUTE_OVERRIDES='{"gpuCount":1}' RFABRIC_WAIT=true RFABRIC_WAIT_TIMEOUT=6h RFABRIC_REPLACE_PREVIOUS=true
+  check "$provider training manual run: every training input mapped" equal "$argv" \
+    "$run_line --dataset-version dsv_01JZ0000000000000000000001 --dataset-version dsv_01JZ0000000000000000000002 --base-model mdl_01JZ0000000000000000000001 --config-overrides {\"lr\":0.1} --compute-overrides {\"gpuCount\":1} --wait --wait-timeout 6h --replace-previous --markdown <dir>/run.md --output json"
+  check "$provider training manual run, waited: the terminal status and best checkpoint" equal \
+    "$(jq -r '[.status, ."best-checkpoint-id"] | join(" ")' "$result/outputs.json")" "completed ckpt_01JZ0000000000000000000001"
+
+  scenario "$provider" push training-failed RFABRIC_WAIT=true FAKE_TRAINING_CODE=12
+  check "$provider training run failing: the CLI's exit code (got $code)" equal "$code" 12
+
+  scenario "$provider" push training-code-version RFABRIC_CODE_VERSION=0123abc
+  check "$provider training code-version without image: no CLI call" equal "$argv" ""
+  check "$provider training code-version without image: usage error, exit 2 (got $code)" equal "$code" 2
+done
+
+check "GitHub training: the four outputs are step outputs" equal \
+  "$(cut -d= -f1 "$work/github-training-manual/publish-output" | paste -sd ' ' -)" "run-id status run-url best-checkpoint-id"
+check "GitHub training: best-checkpoint-id step output" equal \
+  "$(sed -n 's/^best-checkpoint-id=//p' "$work/github-training-manual/publish-output")" ckpt_01JZ0000000000000000000001
+check "GitHub training: no JUnit artifact name" equal "$(grep -c '^artifact-name=' "$work/github-training-manual/publish-output")" 0
+# shellcheck disable=SC2016 # the backticks are markdown
+check "GitHub training: the job summary" contains "$(cat "$work/github-training-manual/summary")" '`run_01JZ0000000000000000000001` launched'
+check "GitHub training: the fork notice is an error annotation" grep -q '^::error title=rFabric::Not run: this pull request job cannot reach rFabric' \
+  "$work/github-training-fork/publish.log"
+check "GitLab training: dotenv holds the four outputs" equal \
+  "$(cut -d= -f1 "$work/gitlab-training-manual/repo/rfabric-training-run/outputs.env" | paste -sd ' ' -)" \
+  "RFABRIC_RUN_ID RFABRIC_STATUS RFABRIC_RUN_URL RFABRIC_BEST_CHECKPOINT_ID"
+check "Bitbucket training: rfabric-result.json holds the four outputs" equal \
+  "$(jq -c . "$work/bitbucket-training-manual/repo/rfabric-result.json")" \
+  '{"run-id":"run_01JZ0000000000000000000001","status":"completed","run-url":"https://app.example/runs/run_01JZ0000000000000000000001","best-checkpoint-id":"ckpt_01JZ0000000000000000000001"}'
+check "Bitbucket training: no Code Insights report" equal "$(grep -c 'Code Insights' "$work/bitbucket-training-manual/run.log")" 0
+
+# A canceled GitLab training job cancels the waited run in after_script, a new shell: on a merge
+# request it signs in with the pull request client id, as the run did.
+canceled="$work/gitlab-training-pull-request"
+rm "$canceled/repo/rfabric-training-run/exit-code"
+: > "$canceled/calls"
+: > "$canceled/client-ids"
+env -i PATH="$work/stub-bin:$PATH" HOME="$HOME" FAKE="$canceled" RFABRIC_LAUNCH_TEMPLATE=trainer RFABRIC_CLIENT_ID=rf_svc_test \
+  RFABRIC_PULL_REQUEST_CLIENT_ID=rf_svc_pull_request GITLAB_CI=true CI_PROJECT_DIR="$canceled/repo" CI_PROJECT_ID=4242 \
+  CI_DEFAULT_BRANCH=main CI_MERGE_REQUEST_IID=7 CI_MERGE_REQUEST_PROJECT_ID=4242 CI_JOB_STATUS=canceled \
+  "$root/scripts/gitlab.sh" after training-run > "$canceled/after-canceled.log" 2>&1
+check "GitLab canceled training job: after_script cancels the training run" equal "$(cat "$canceled/calls")" \
+  "training-run cancel run_01JZ0000000000000000000001 --output json"
+check "GitLab canceled training job: the cancel signs in with pull-request-client-id" equal \
+  "$(sort -u "$canceled/client-ids")" rf_svc_pull_request
+
+# A fork's pull request job that holds a credential (client-secret, or the identity token of a
+# pull_request_target job, or a GitLab fork merge request run in the merge request's project)
+# is refused before any CLI call, for sim and training; so is a GitHub pull request whose payload
+# cannot prove its head is this repository (missing, empty, malformed, no jq). A pull request from
+# this repository runs.
+mkdir -p "$work/no-jq-bin"
+printf '#!/usr/bin/env bash\nexit 127\n' > "$work/no-jq-bin/jq"
+chmod +x "$work/no-jq-bin/jq"
+for run_script in sim-run training-run; do
+  scenario_run_script=$run_script
+  for fork in github:fork-secret github:fork-target gitlab:fork-secret \
+    github:payload-missing github:payload-empty github:payload-malformed github:payload-no-jq; do
+    scenario "${fork%%:*}" "${fork#*:}" "$run_script-${fork#*:}"
+    check "$run_script $fork: no CLI call" equal "$argv" ""
+    check "$run_script $fork: fails (got $code)" equal "$code" 1
+    check "$run_script $fork: the fork notice" grep -q "It comes from a fork" "$result/notice.md"
+    case ${fork#*:} in
+      payload-no-jq) reason="It is treated as a fork because jq is not available on the runner" ;;
+      payload-missing | payload-empty) reason="It is treated as a fork because the event file (GITHUB_EVENT_PATH) is missing or empty" ;;
+      payload-malformed) reason="It is treated as a fork because the event file is not a readable pull request payload" ;;
+      *) reason="" ;;
+    esac
+    if [[ -n $reason ]]; then
+      check "$run_script $fork: the notice names the cause" grep -qF "$reason" "$result/notice.md"
+    else
+      check "$run_script $fork: no unreadable-payload cause" equal "$(grep -c 'It is treated as a fork because' "$result/notice.md")" 0
+    fi
+  done
+  scenario github same-repository "$run_script-same-repository"
+  check "$run_script GitHub pull request from this repository: the CLI runs" test -n "$argv"
+done
+
+# Every GitHub preset job that passes dir to the training action checks the repository out
+# first: the action reads the definition directory from the job's working tree.
+for preset in "$root"/presets/training-run/github/*.yml; do
+  check "$(basename "$preset"): dir only after a checkout in the same job" equal "$(awk '
+    /^  [A-Za-z0-9_-]+:$/ { checkout = 0; action = 0 }
+    /uses: actions\/checkout@/ { checkout = 1 }
+    /^      - / { action = 0 }
+    /uses: rfabric\/cli\/training-run@/ { action = 1 }
+    action && /^          dir:/ && !checkout { print FILENAME ":" FNR }' "$preset")" ""
+done
+
+# The training presets read their values from TRAINING_* variables: on GitLab a project variable
+# named like a template job variable (RFABRIC_<INPUT>) would override the value an input maps.
+check "training presets: no RFABRIC_ variable as a value source" equal \
+  "$(grep -rnoE '(vars\.|\$)RFABRIC_[A-Z_]+' "$root/presets" || true)" ""
+
+check "an unknown run script is a usage error" equal \
+  "$(env -i PATH="$PATH" "$root/scripts/github.sh" run train > /dev/null 2>&1; echo $?)" 2
 
 echo
 if [[ $failures -gt 0 ]]; then

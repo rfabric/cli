@@ -1,0 +1,65 @@
+# rFabric training preset: manual run. Run the pipeline from Build > Pipelines > Run pipeline with
+# the launch template, dataset version and overrides filled in; it builds the trainer image from
+# the chosen ref, then launches a training run on it. Copy into .gitlab-ci.yml; ADAPT marks what
+# to change. The commit the image was built from is the pipeline's commit, CI_COMMIT_SHA.
+# CI/CD variables: TRAINING_CLIENT_ID, TRAINING_EXPERIMENT_ID (never RFABRIC_*: a project variable
+# named like a template input, RFABRIC_<INPUT>, overrides the job variable the template sets, the
+# value of the Run pipeline form included). Protect the job's GPU spend with a protected
+# environment and deployment approvals where your plan has them.
+
+# The Run pipeline form shows these with their descriptions.
+variables:
+  LAUNCH_TEMPLATE:
+    value: trainer
+    description: Launch template slug
+  DATASET_VERSION:
+    value: ""
+    description: Dataset version id(s), comma separated
+  CONFIG_OVERRIDES:
+    value: ""
+    description: Training config overrides, JSON object
+  COMPUTE_OVERRIDES:
+    value: ""
+    description: Compute overrides, JSON object
+
+stages: [build, train]
+
+include:
+  - remote: https://raw.githubusercontent.com/rfabric/cli/v0.1/templates/training-run.yml
+    inputs:
+      stage: train
+      launch-template: $LAUNCH_TEMPLATE
+      experiment: $TRAINING_EXPERIMENT_ID
+      dataset-versions: $DATASET_VERSION
+      config-overrides: $CONFIG_OVERRIDES
+      compute-overrides: $COMPUTE_OVERRIDES
+      code-version: $CI_COMMIT_SHA
+      client-id: $TRAINING_CLIENT_ID
+      audience: https://auth.rfabric.io # ADAPT: the trust's audience
+
+# The pipelines both jobs run in.
+.train:
+  rules: &train-rules
+    - if: $CI_PIPELINE_SOURCE == "web"
+
+# The trainer image, pushed and passed on by digest: the dotenv report's RFABRIC_IMAGE takes
+# precedence over the template job's variable of the same name. ADAPT: context and Dockerfile.
+build-trainer:
+  stage: build
+  image: docker:27
+  services: [docker:27-dind]
+  rules: *train-rules
+  variables:
+    TRAINER_REPOSITORY: $CI_REGISTRY_IMAGE/trainer
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login --username "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - docker build --file Dockerfile --tag "$TRAINER_REPOSITORY:$CI_COMMIT_SHA" .
+    - docker push "$TRAINER_REPOSITORY:$CI_COMMIT_SHA"
+    - echo "RFABRIC_IMAGE=$(docker inspect --format '{{index .RepoDigests 0}}' "$TRAINER_REPOSITORY:$CI_COMMIT_SHA")" > trainer.env
+  artifacts:
+    reports:
+      dotenv: trainer.env
+
+rfabric-training-run:
+  needs: [build-trainer]
+  rules: *train-rules

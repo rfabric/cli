@@ -1,6 +1,6 @@
 # CI wrappers
 
-Run rFabric simulation suites from CI and gate the pipeline on the verdict: one suite (`suite`), or every approved suite of a definition directory (`dir`), the directory in your repository that holds your simulation evaluation definitions as files. Three wrappers around the `rfabric` CLI, one input set:
+Run rFabric simulation suites from CI and gate the pipeline on the verdict: one suite (`suite`), or every approved suite of a definition directory (`dir`), the directory in your repository that holds your simulation evaluation definitions as files. Three wrappers around the `rfabric` CLI, one input set. Launching training runs from CI has its own entry points, in the same release: see Training runs below.
 
 | Provider | Use |
 |---|---|
@@ -17,7 +17,7 @@ Each wrapper registers the candidate image (`rfabric artifact-build register`) o
 | pull request | preflight, `rfabric sim run <suite> --wait` | `rfabric eval apply --preview` (problems fail the step and nothing runs), then `rfabric sim run --dir` (blocking) and, when the preview changes a definition and `test-run` is `auto`, at the same time `rfabric eval test-run --changed` (never fails the step) |
 | any other run on `base-branch` (a push) | same | `rfabric eval apply`, then `rfabric sim run --dir` |
 | any other run | same | `rfabric sim run --dir` |
-| pull request without an identity token and without `client-secret` (a fork) | fails before any CLI call with the notice that a trusted run on the same commit is needed | same |
+| pull request from a fork (GitHub: the event's head repository is not this repository, `pull_request_target` included; GitLab: the merge request's source project, or the pipeline's project, is not the merge request's project), or without an identity token and without `client-secret` | fails before any CLI call, whatever credential the job holds, with the notice that a trusted run on the same commit is needed | same |
 
 `rfabric sim run --dir` runs the suites the platform holds as approved for this repository and directory (published by an apply on the base branch), never the pull request's files, so a pull request cannot drop or weaken its own suites; no approved suite matching is not passing (exit 20). The test run runs the changed suites as unpublished definitions; its result is reported in its own section, "Test run - not yet approved", and never satisfies a merge check.
 
@@ -76,6 +76,8 @@ jobs:
 
 Run it on `pull_request` and on `push` to the default branch. The summary goes to the job summary and, on a pull request, to one comment per suite or definition directory, written by the job token and updated in place on every push (a pull request from a fork has a read-only token: no comment, a notice). The JUnit reports and the markdown are uploaded as the artifact `rfabric-sim-run-<suite>-<job id>` (`rfabric-sim-run-dir-<dir>-<first job id>` with `dir`). The base branch defaults to the repository's default branch from the event payload.
 
+The GitHub actions (`rfabric/cli` and `rfabric/cli/training-run`) need `jq` on the runner; GitHub-hosted runners have it. They read the event payload with it: without `jq`, or with an unreadable event file, every pull request is refused as a possible fork (the notice names the cause) and a push is not recognised as a run on the base branch.
+
 ## GitLab CI
 
 ```yaml
@@ -91,7 +93,7 @@ include:
 
 For `pull-request-client-id`, give a client id or nothing: a project CI/CD variable `RFABRIC_PULL_REQUEST_CLIENT_ID` reaches the job without the input, as project variables override the template's job variables of the same name, while an input `$RFABRIC_PULL_REQUEST_CLIENT_ID` stays that text when the variable is unset.
 
-The job `rfabric-sim-run` runs in `ghcr.io/rfabric/cli:<cli-version>` on the stage `stage` (default `test`); run the pipeline for merge requests and the default branch. A merge request pipeline is a pull request; the base branch defaults to `CI_DEFAULT_BRANCH`. JUnit goes to the merge request's test report, the outputs to the dotenv report (`RFABRIC_JOB_ID`, `RFABRIC_REPORT_ID`, `RFABRIC_CONCLUSION`, `RFABRIC_OPERATIONAL_CLASSIFICATION`, `RFABRIC_JOB_URL`, `RFABRIC_ARTIFACT_ID`) and every output, `suites` included (dotenv takes no JSON), to the artifact `rfabric-sim-run/outputs.json`. A canceled job cancels the blocking evaluation jobs in `after_script`. A merge request pipeline that runs in the fork project gets the fork notice. With a CI/CD variable `RFABRIC_GITLAB_TOKEN` (a token with the `api` scope), a merge request pipeline creates or updates one note per suite or definition directory, written by that token's user.
+The job `rfabric-sim-run` runs in `ghcr.io/rfabric/cli:<cli-version>` on the stage `stage` (default `test`); run the pipeline for merge requests and the default branch. A merge request pipeline is a pull request; the base branch defaults to `CI_DEFAULT_BRANCH`. JUnit goes to the merge request's test report, the outputs to the dotenv report (`RFABRIC_JOB_ID`, `RFABRIC_REPORT_ID`, `RFABRIC_CONCLUSION`, `RFABRIC_OPERATIONAL_CLASSIFICATION`, `RFABRIC_JOB_URL`, `RFABRIC_ARTIFACT_ID`) and every output, `suites` included (dotenv takes no JSON), to the artifact `rfabric-sim-run/outputs.json`. A canceled job cancels the blocking evaluation jobs in `after_script`. A merge request from a fork gets the fork notice, whether its pipeline runs in the fork project or in this project. With a CI/CD variable `RFABRIC_GITLAB_TOKEN` (a token with the `api` scope), a merge request pipeline creates or updates one note per suite or definition directory, written by that token's user.
 
 ## Bitbucket Pipelines
 
@@ -151,8 +153,89 @@ GitHub and GitLab use these names; the Bitbucket pipe uses `RFABRIC_` plus the n
 
 `job-id`, `report-id`, `conclusion`, `operational-classification`, `job-url` (with `suite`; empty with `dir`), `artifact-id` (the artifact registered from `image`), `suites` (each suite's result as JSON: `[{suite, version, jobId, reportId, conclusion, operationalClassification, exitCode, jobUrl}]`): GitHub step outputs, GitLab dotenv variables `RFABRIC_<NAME>` (`suites` in `rfabric-sim-run/outputs.json` only), Bitbucket `rfabric-result.json`.
 
+## Training runs
+
+Launch a training run from a launch template on the trainer image the pipeline built (`rfabric training run`), optionally after applying the repository's launch template files (`rfabric training apply`), and optionally wait for it to end. The same sign-in, event detection, credential choice and fork refusal as the sim wrappers.
+
+| Provider | Use |
+|---|---|
+| GitHub Actions | `uses: rfabric/cli/training-run@v0.1` (`training-run/action.yml`) |
+| GitLab CI | `include: remote: https://raw.githubusercontent.com/rfabric/cli/v0.1/templates/training-run.yml` (job `rfabric-training-run`, result directory `rfabric-training-run/`) |
+| Bitbucket Pipelines | `pipe: docker://ghcr.io/rfabric/cli:0.1` with `RFABRIC_LAUNCH_TEMPLATE` set (`pipe.yml` documents both variable sets); no Code Insights report for a training run, only `rfabric-result.json` and, with `RFABRIC_BITBUCKET_TOKEN`, the pull request comment |
+
+| Run | Commands |
+|---|---|
+| pull request | with `dir`: `rfabric training apply --dir <dir> --preview` (problems fail the step and nothing launches); then `rfabric training run` |
+| any other run on `base-branch` (a push) | with `dir`: `rfabric training apply --dir <dir>`, with `--image <launch-template>=<image>` when `image` is set and `--code-version <code-version>` when both are; then `rfabric training run` |
+| any other run (tag, manual, schedule) | `rfabric training run` |
+| pull request from a fork, or without an identity token and without `client-secret` (as for the sim wrappers) | fails before any CLI call, whatever credential the job holds, with the notice that a trusted run on the same commit is needed |
+
+`rfabric training run <launch-template> --experiment <experiment>` gets `--dataset-version` per dataset version, `--tag` per run tag (`run-tags`), `--base-model`, `--config-overrides`, `--compute-overrides`, `--image`, `--code-version` (only when set), `--wait` and `--wait-timeout`, `--replace-previous`, and `--markdown` (the summary the job summary and the pull request comment show). The CLI prints `✓ Training run <run id> launched from launch template <slug>` once per launch; the wrapper records the run id from it. Cancelling the pipeline while it waits cancels the run (GitLab: in `after_script`). With `dir`, the job must hold the repository's files: on GitHub, check out the commit in the job that runs the action (`actions/checkout`); GitLab and Bitbucket jobs clone it.
+
+The step exits with the CLI's exit code (`rfabric help exit-codes`):
+
+| Code | Meaning |
+|---|---|
+| 0 | launched (without `wait`), or completed (with `wait`) |
+| 40 | the run was cancelled, or the wait was interrupted (the run is cancelled) |
+| 50 | the run failed |
+| 60 | `wait-timeout` expired; the run keeps going |
+| 3 | validation: the apply preview or apply found problems in `dir`, or the launch was refused (a guardrail, an image the pool cannot pull) |
+| 2 | usage: a missing or contradictory input (`code-version` without `image`, `wait-timeout` without `wait`, ...) |
+| 5 | permission denied (e.g. `replace-previous` without `training:cancel`) |
+| 1 | the pull request cannot reach rFabric (a fork), or another failure |
+
+`code-version` is the commit `image` was built from. The wrappers never default it: the pipeline states it (the provider's commit variable: `github.sha`, `CI_COMMIT_SHA`, `BITBUCKET_COMMIT`), and it goes only with `image`.
+
+Credentials, as for the sim wrappers: `client-id` for base-branch runs (`training:configure` to apply `dir`, `training:launch,read,cancel`), `pull-request-client-id` for pull request runs (`training:launch,read,cancel`, no `training:configure`). `replace-previous` needs `training:cancel`. The base-branch credential has a second trust for runs off the base branch (the tag and manual presets):
+
+| Provider | Base branch trust | Second trust |
+|---|---|---|
+| GitHub Actions | `ref=refs/heads/main` | `ref=refs/tags/train/*` |
+| GitLab | `ref_path=refs/heads/main` | `ref_path=refs/tags/train/*` |
+| Bitbucket Pipelines | `branchName=main` | `deploymentEnvironmentUuid={...}`: the deployment environment `training` |
+
+Bitbucket's identity token names no tag, so a run off the base branch signs in through the deployment environment. Create the deployment environment `training` (Repository settings > Deployments), allow only maintainers to deploy to it (Bitbucket Premium custom deployment permissions), and copy its UUID, braces included, into the credential trust. Every step that launches off the base branch declares `deployment: training` (the tag, manual and schedule presets do). Without that restriction any branch with a `deployment: training` step signs in as the base-branch credential. Protect the tag pattern `train/*` on GitHub (tag rulesets) and GitLab (protected tags) for the same reason.
+
+### Training inputs
+
+GitHub and GitLab use these names; the Bitbucket pipe uses `RFABRIC_` plus the name in upper snake case. `client-id`, `pull-request-client-id`, `client-secret`, `workspace`, `profile`, `api-url`, `auth-url`, `cli-version`, `comment` (GitHub), `audience` and `stage` (GitLab) are as in Inputs above.
+
+| Input | Meaning | Default |
+|---|---|---|
+| `launch-template` | launch template id or slug (required); with `dir`, the slug of the template's file | - |
+| `experiment` | experiment id the run belongs to (required) | - |
+| `dataset-versions` | dataset version ids, comma or newline separated | - |
+| `base-model` | base model id to fine-tune from | - |
+| `config-overrides`, `compute-overrides` | JSON objects; the template's guardrails decide which keys are allowed | - |
+| `run-tags` | the training run's tags `key=value`, comma or newline separated (sim's `tags` selects suites) | - |
+| `image` | trainer image `<repository>@sha256:<digest>` instead of the template's (the template must allow the `image` override) | - |
+| `code-version` | the commit `image` was built from; only with `image` | - |
+| `dir` | definition directory of launch template files (e.g. `training`), applied as the table above says | - |
+| `base-branch` | branch whose runs apply `dir` | the repository's default branch (Bitbucket: `main`) |
+| `wait` | `true`: wait until the run ends | `false` |
+| `wait-timeout` | with `wait`: how long to wait (a duration, e.g. `6h`); the run keeps going after a timeout | the CLI's |
+| `replace-previous` | `true`: cancel the runs this repository launched earlier from the same ref and launch template before launching | `false` |
+
+### Training outputs
+
+`run-id`, `status` (as launched; with `wait`, the terminal status), `run-url`, `best-checkpoint-id` (with `wait`, when the run has one): GitHub step outputs, GitLab dotenv variables `RFABRIC_RUN_ID`, `RFABRIC_STATUS`, `RFABRIC_RUN_URL`, `RFABRIC_BEST_CHECKPOINT_ID` (and `rfabric-training-run/outputs.json`), Bitbucket `rfabric-result.json`.
+
+### Trigger presets
+
+Ready pipeline files under `presets/training-run/<github|gitlab|bitbucket>/`, one per preset. Each builds and pushes the trainer image, passes it on by digest, and calls the training entry point with `code-version` set to the commit it built from, named in the file. GitHub presets use `permissions: id-token: write`; the GPU presets run the launch in the environment `gpu-training`, whose required reviewers approve before GPU spend. No commit-message markers. The presets read their values from CI variables named `TRAINING_*` (`TRAINING_CLIENT_ID`, `TRAINING_EXPERIMENT_ID`, `TRAINING_DATASET_VERSIONS`; pull request presets `TRAINING_PULL_REQUEST_CLIENT_ID`, `TRAINING_PULL_REQUEST_WORKSPACE_ID`, `TRAINING_PULL_REQUEST_EXPERIMENT_ID`, `TRAINING_PULL_REQUEST_DATASET_VERSIONS`, Bitbucket `TRAINING_BITBUCKET_TOKEN`): on GitLab a project CI/CD variable named like a template job variable (`RFABRIC_<INPUT>`, e.g. `RFABRIC_DATASET_VERSIONS`) overrides the value the template maps from the input, a value typed into the Run pipeline form included.
+
+| Preset | Trigger | Launch |
+|---|---|---|
+| `manual.yml` | manual run with launch template, dataset version and overrides (GitHub `workflow_dispatch`, GitLab Run pipeline form, Bitbucket custom pipeline `train`) | GPU |
+| `tag.yml` | tag push `train/*` | GPU, tagged `git-tag=<tag>` |
+| `trainer-change.yml` | push to the base branch touching the trainer's paths (code, config, `Dockerfile`, lockfile, `training/`) | GPU, applies `training/` with the image and commit first |
+| `schedule.yml` | schedule on the base branch | GPU |
+| `pull-request-approved.yml` | a maintainer approves the pull request (GitHub and GitLab: the label `train`; Bitbucket, which has no labels: a manual step) | short step-capped template in the pull request workspace, `replace-previous` |
+| `pull-request.yml` | every pull request push | a short CPU training run of the dedicated template `trainer-pull-request-cpu` in the pull request workspace, `replace-previous` |
+
 ## Development
 
-`scripts/sim-run.sh` is the one script that chooses the `rfabric` commands and the client id for the run, maps the inputs to their flags and reads the result; `github.sh`, `gitlab.sh` and `pipe.sh` only tell it the run's event (pull request, base-branch run, other; identity token; fork) and publish the result. `mise run test` runs `tests/unit.sh` (the release promotion, the request body size, the annotation limit, and each entry point's commands and client id per event for a definition directory with the CLI stubbed; no stack), then every entry point, and the pipe in its image, against a local rFabric stack (`tests/run.sh`): it creates its own workspace with the suites and candidate it runs, and deletes it at the end. `scripts/set-version.sh <version>` pins a release.
+`scripts/ci-job.sh` is the CI job side every entry point shares: the run's event model, the client id the CLI signs in with, the refusal of a pull request that cannot reach rFabric, signal forwarding to the CLI, the definition directory apply, the result directory, the outputs and provider REST calls. A run script maps the inputs to `rfabric` flags and reads the result: `scripts/sim-run.sh` for simulation runs, `scripts/training-run.sh` for training runs. `github.sh`, `gitlab.sh` and `pipe.sh` choose the run script (GitHub and GitLab: the second argument, `sim-run` by default or `training-run`; the pipe: `training-run` when `RFABRIC_LAUNCH_TEMPLATE` is set), detect the run's event (pull request, base-branch run, other; identity token; fork) and publish the result. `mise run test` runs `tests/unit.sh` (the release promotion, the request body size, the annotation limit, each entry point's commands and client id per event for a definition directory, and the exact training commands, client id and outputs per event, with the CLI stubbed; no stack), then every entry point, and the pipe in its image, against a local rFabric stack (`tests/run.sh`): it creates its own workspace with the suites, candidate, experiment and launch template it runs, and deletes it at the end. `scripts/set-version.sh <version>` pins a release.
 
 `.github/workflows/image.yml` publishes the public GitHub Container Registry package `ghcr.io/rfabric/cli:<version>` for each stable release with the job token, then `scripts/promote.sh <version>` moves the git tag `v<major>.<minor>`, then the image tag `<major>.<minor>`, to the newest stable patch of the line whose image exists: that release or a newer one; a reference already there stays. If that release's own image cannot be read, the promotion fails and moves nothing. GitHub may cancel a pending promotion of the line when another one queues; the next promotion completes it. The git tag is pushed with the repository secret `RELEASE_GITHUB_TOKEN`, a token with Contents and Workflows write on `rfabric/cli`: the job token cannot hold the workflows permission, and GitHub may refuse it a tag move to a commit that changes `.github/workflows/`. A refused push leaves both references where they were. A failed promotion is fixed by re-running the failed job (`Re-run failed jobs`; re-running the whole workflow stops at `Refuse an existing version tag`), or by the next release of the line.

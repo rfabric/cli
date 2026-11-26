@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Runs every wrapper entry point against the local stack with a simulated runner environment
-# (`mise run test`). Each scenario runs the provider script the way the provider does, in an
-# environment holding only that provider's variables (exported RFABRIC_*, GITHUB_*, ACTIONS_*,
-# RUNNER_*, GITLAB_*, CI_*, BITBUCKET_*), with `rfabric-dev` on PATH as `rfabric`, and the
-# provider endpoints stubbed on localhost (tests/stub.mjs).
+# (`mise run test`): the sim runs, then the training runs. Each scenario runs the provider script
+# the way the provider does, in an environment holding only that provider's variables (exported
+# RFABRIC_*, GITHUB_*, ACTIONS_*, RUNNER_*, GITLAB_*, CI_*, BITBUCKET_*), with `rfabric-dev` on
+# PATH as `rfabric`, and the provider endpoints stubbed on localhost (tests/stub.mjs).
 #
 # Secretless throughout: the test creates a trust credential in its workspace whose trusts
 # accept the stub issuer's GitHub, GitLab and Bitbucket tokens; it revokes it at the end.
@@ -16,9 +16,16 @@
 #   wrong-placement  the oracle measures the payload 0.5 m off target: behavioral_failure
 #   held             the oracle holds readiness, so a job is still running when cancelled
 #
-# Needs the stack's api and auth (with the sim.attempt handler image on the local Docker pool),
-# `rfabric-dev` (`mise run cli:dev`), node, jq, git and docker. Optional: RFABRIC_API_URL
-# (default http://localhost:10201), RFABRIC_AUTH_URL (default http://localhost:10301),
+# For the training runs: an experiment, and the launch template file
+# tests/fixtures/training/launch-templates/ci-wrapper-trainer.json (the rsi fixture trainer image
+# rfabric-example-rsi-fixture-trainer on the local Docker pool cpu-standard), which the GitHub
+# base-branch push applies.
+#
+# Needs the stack's api and auth (with the sim.attempt handler image on the local Docker pool:
+# `mise run compute:images --seed sim-attempt`, and the rsi fixture trainer image in the local
+# engine), `rfabric-dev` (`mise run cli:dev`), node, jq, git and docker. Optional:
+# RFABRIC_API_URL (default http://localhost:10201), RFABRIC_AUTH_URL (default
+# http://localhost:10301; a stack slot N serves them on 10200+N and 10300+N),
 # RFABRIC_TEST_STUB_PORT (default 18091), RFABRIC_TEST_IMAGE_CLI (the CLI the pipe image gets: a
 # Linux build for the Docker engine's platform; default rfabric-dev, which only a Linux host can
 # put in the image).
@@ -156,6 +163,15 @@ fixtures() {
     && as_owner model approve "$candidate" --reason "Candidate of the CI wrapper tests" > /dev/null
 }
 
+# training_fixtures: sets experiment (created in the test workspace) and launch_template, the
+# slug of the launch template file tests/fixtures/training holds: the rsi fixture trainer on the
+# local Docker pool cpu-standard. The GitHub base-branch push below applies the file.
+training_fixtures() {
+  experiment=$(create experiment "$(jq -nc --arg workspace "$workspace" \
+    '{workspaceId: $workspace, name: "CI wrapper test training"}')") || return 1
+  launch_template=$(jq -er .slug "$root/tests/fixtures/training/launch-templates/ci-wrapper-trainer.json")
+}
+
 cleanup() {
   if [[ -n $client_id ]]; then
     as_owner credential revoke "$client_id" --confirm > /dev/null 2>&1 \
@@ -229,6 +245,7 @@ session=$(curl -fsS -D - -o /dev/null -X POST "$auth_url/api/auth/sign-in/email"
 [[ -n $session ]] || { echo "could not sign in as seed@rfabric.io at $auth_url" >&2; exit 1; }
 
 fixtures || { echo "could not create the fixtures" >&2; exit 1; }
+training_fixtures || { echo "could not create the training fixtures" >&2; exit 1; }
 organization=$(as_owner workspace get "$workspace" --output json | jq -er .organizationId) || exit 1
 github_repository_id=123456789
 gitlab_project_id=4242
@@ -237,11 +254,12 @@ client_id=$(as_owner credential create --name "cli-wrapper-test-$run_id" \
   --organization-id "$organization" --workspace-id "$workspace" \
   --permission simSuite:launch --permission evaluationJob:launch,cancel \
   --permission artifact:read,create,build --permission model:read,create \
+  --permission training:launch,read,cancel,configure \
   --trust-issuer "$stub" --trust-condition "repository_id=$github_repository_id" \
   --output json | jq -er .clientId) || { echo "could not create the test credential" >&2; exit 1; }
 as_owner credential trust add "$client_id" --issuer "$stub" --condition "project_id=$gitlab_project_id" > /dev/null || exit 1
 as_owner credential trust add "$client_id" --issuer "$stub" --condition "repositoryUuid=$bitbucket_repository_uuid" > /dev/null || exit 1
-echo "suites $suite, $failing_suite, $held_suite; candidate $candidate; workspace $workspace; credential $client_id"
+echo "suites $suite, $failing_suite, $held_suite; candidate $candidate; launch template $launch_template; experiment $experiment; workspace $workspace; credential $client_id"
 
 # inputs <suite>: the inputs every scenario shares. No workspace input: the credential's
 # workspace is the default.
@@ -264,7 +282,7 @@ reviewer_comment() {
 say "GitHub Action: run and publish steps, the pull request comment created"
 gh_repo=$(repository github)
 gh_sha=$(git -C "$gh_repo" rev-parse HEAD)
-printf '{"pull_request":{"number":42,"html_url":"https://github.com/acme/robot/pull/42","head":{"sha":"%s"}}}' \
+printf '{"repository":{"full_name":"acme/robot"},"pull_request":{"number":42,"html_url":"https://github.com/acme/robot/pull/42","head":{"sha":"%s","repo":{"full_name":"acme/robot"}}}}' \
   "$gh_sha" > "$work/event.json"
 inputs "$suite"
 export GITHUB_ACTIONS=true GITHUB_SERVER_URL=https://github.com GITHUB_REPOSITORY=acme/robot \
@@ -385,6 +403,26 @@ else
   fail "the launch never wrote job-id"
   cat "$work/gh-cancel.log"
 fi
+
+say "GitHub Action: a base-branch push and a tag push run the suite"
+printf '{"repository":{"default_branch":"main"}}' > "$work/push-event.json"
+export RFABRIC_SUITE=$suite GITHUB_EVENT_NAME=push GITHUB_EVENT_PATH="$work/push-event.json"
+for ref in refs/heads/main refs/tags/train/v1; do
+  export GITHUB_REF=$ref GITHUB_RUN_ID="gh-${ref##*/}-$run_id"
+  github_steps "gh-sim-${ref##*/}"
+  check "$ref: a passing suite exits 0 (got $gh_code)" equal "$gh_code" 0
+  check "$ref: the job records the ref" equal "$(job "$(output "gh-sim-${ref##*/}" job-id)" | jq -r .ci.ref)" "$ref"
+done
+
+say "GitHub Action: a fork pull request's job cannot reach rFabric"
+export GITHUB_EVENT_NAME=pull_request GITHUB_REF=refs/pull/42/merge GITHUB_EVENT_PATH="$work/event.json" \
+  GITHUB_RUN_ID="gh-fork-$run_id"
+unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
+github_steps gh-sim-fork
+check "exit 1 (got $gh_code)" equal "$gh_code" 1
+check "no job" equal "$(output gh-sim-fork job-id)" ""
+check "the fork notice is an error annotation" contains "$work/gh-sim-fork/publish.log" \
+  "::error title=rFabric::Not run: this pull request job cannot reach rFabric"
 unexport GITHUB_ ACTIONS_ RUNNER_ RFABRIC_
 
 # ------------------------------------------------------------------------------------------
@@ -553,6 +591,335 @@ else
   fail "the launch never wrote job-id"
   docker logs "rfabric-cli-test-$run_id"
 fi
+unexport BITBUCKET_ RFABRIC_
+
+# ------------------------------------------------------------------------------------------
+# Training: every entry point per event. The trainer is the rsi fixture trainer; its image is the
+# one the launch template file names, passed as the image input as a pipeline's build would.
+trainer_image=$(jq -er .defaultComputeConfig.image "$root/tests/fixtures/training/launch-templates/ci-wrapper-trainer.json")
+# training_inputs <commit>: the inputs every training scenario shares.
+training_inputs() {
+  export RFABRIC_LAUNCH_TEMPLATE=$launch_template RFABRIC_EXPERIMENT=$experiment RFABRIC_IMAGE=$trainer_image \
+    RFABRIC_CODE_VERSION=$1 RFABRIC_CLIENT_ID=$client_id RFABRIC_API_URL=$api_url RFABRIC_AUTH_URL=$auth_url
+}
+run_record() { as_owner training-run get "$1" --output json; }
+run_status() { run_record "$1" | jq -r .status; }
+training_marker="<!-- rfabric-training-run:$launch_template -->"
+# github_event <event name> <ref> <event file> <run id>: the GitHub variables of one workflow run.
+github_event() {
+  export GITHUB_ACTIONS=true GITHUB_SERVER_URL=https://github.com GITHUB_REPOSITORY=acme/robot \
+    GITHUB_RUN_ID="$4" GITHUB_RUN_ATTEMPT=1 GITHUB_SHA=$gh_sha GITHUB_REF=$2 \
+    GITHUB_EVENT_NAME=$1 GITHUB_EVENT_PATH=$3 GITHUB_API_URL=$stub \
+    GITHUB_TOKEN=job-token RUNNER_TEMP="$work/runner" RFABRIC_COMMENT=true \
+    ACTIONS_ID_TOKEN_REQUEST_URL="$stub/github-id-token?api-version=2.0" ACTIONS_ID_TOKEN_REQUEST_TOKEN=github-request-token
+}
+# github_training_steps <name>: the training action's run step, then its publish step, in
+# $work/<name>; sets gh_code and gh_dir.
+github_training_steps() {
+  mkdir -p "$work/$1"
+  export GITHUB_OUTPUT="$work/$1/run-output" GITHUB_STEP_SUMMARY="$work/$1/summary"
+  : > "$GITHUB_OUTPUT"
+  (cd "$gh_repo" && provider "$root/scripts/github.sh" run training-run) > "$work/$1/run.log" 2>&1
+  gh_code=$?
+  gh_dir=$(sed -n 's/^dir=//p' "$GITHUB_OUTPUT")
+  export GITHUB_OUTPUT="$work/$1/publish-output" RFABRIC_RESULT_DIR=$gh_dir
+  : > "$GITHUB_OUTPUT"
+  (cd "$gh_repo" && provider "$root/scripts/github.sh" publish training-run) > "$work/$1/publish.log" 2>&1
+  unset RFABRIC_RESULT_DIR
+}
+
+say "GitHub training action: a base-branch push applies training/, then waits for the run"
+cp -R "$root/tests/fixtures/training" "$gh_repo/training"
+training_inputs "$gh_sha"
+export RFABRIC_DIR=training RFABRIC_WAIT=true RFABRIC_WAIT_TIMEOUT=15m
+github_event push refs/heads/main "$work/push-event.json" "gh-train-base-$run_id"
+github_training_steps gh-train-base
+cat "$work/gh-train-base/run.log"
+train_base=$(output gh-train-base run-id)
+template=$(as_owner launch-template ls -f "workspaceId=$workspace" -f "slug=$launch_template" --output json | jq -c 'first')
+check "a completed run exits 0 (got $gh_code)" equal "$gh_code" 0
+check "output status completed" equal "$(output gh-train-base status)" completed
+check "output run-id" matches "$train_base" '^run_[0-9A-Za-z]{26}$'
+check "output run-url is the run's page" equal "$(output gh-train-base run-url)" "$(run_record "$train_base" | jq -r .appUrl)"
+check "the apply created the template, stamped with the image and commit" equal \
+  "$(jq -c '{image: .defaultComputeConfig.image, codeVersion, repository: .ci.repository, directoryPath}' <<< "$template")" \
+  "{\"image\":\"$trainer_image\",\"codeVersion\":\"$gh_sha\",\"repository\":\"https://github.com/acme/robot\",\"directoryPath\":\"training\"}"
+check "the run carries the image and its code version" equal \
+  "$(run_record "$train_base" | jq -c '{image: .computeConfig.image, codeVersion}')" "{\"image\":\"$trainer_image\",\"codeVersion\":\"$gh_sha\"}"
+check "the job summary holds the CLI's run summary" contains "$work/gh-train-base/summary" "$train_base"
+unset RFABRIC_DIR RFABRIC_WAIT RFABRIC_WAIT_TIMEOUT
+
+say "GitHub training action: a pull request launches, a retried step reuses the run, the comment"
+github_event pull_request refs/pull/42/merge "$work/event.json" "gh-train-pr-$run_id"
+# A long run, so it is still running when the next pipeline replaces it.
+export RFABRIC_CONFIG_OVERRIDES='{"iterations": 100000}'
+github_training_steps gh-train1
+cat "$work/gh-train1/run.log"
+train1=$(output gh-train1 run-id)
+check "a launch exits 0 (got $gh_code)" equal "$gh_code" 0
+check "output run-id" matches "$train1" '^run_[0-9A-Za-z]{26}$'
+check "output status: the launched run's" equal "$(output gh-train1 status)" queued
+check "output best-checkpoint-id empty without wait" equal "$(output gh-train1 best-checkpoint-id)" ""
+check "the run records the pull request provenance" equal \
+  "$(run_record "$train1" | jq -c '.ci | {repository, commit, pullRequest}')" \
+  "{\"repository\":\"https://github.com/acme/robot\",\"commit\":\"$gh_sha\",\"pullRequest\":42}"
+check "one pull request comment, the launch template's marker first" equal \
+  "$(count ".method == \"POST\" and .token == \"job-token\" and .url == \"/repos/acme/robot/issues/42/comments\" and (.body.body | startswith(\"$training_marker\n\"))")" 1
+github_training_steps gh-train2
+check "a retried step: the same run" equal "$(output gh-train2 run-id)" "$train1"
+check "a retried step: the comment updated in place" equal \
+  "$(count ".method == \"PATCH\" and .token == \"job-token\" and (.body.body | startswith(\"$training_marker\n\"))")" 1
+
+say "GitHub training action: a new pipeline with replace-previous cancels the earlier run"
+export GITHUB_RUN_ID="gh-train-replace-$run_id" RFABRIC_REPLACE_PREVIOUS=true
+github_training_steps gh-train3
+cat "$work/gh-train3/run.log"
+train3=$(output gh-train3 run-id)
+check "a new run (got $train3)" test -n "$train3" -a "$train3" != "$train1"
+check "the earlier run is cancelled" equal "$(run_status "$train1")" cancelled
+as_owner training-run cancel "$train3" > /dev/null 2>&1
+unset RFABRIC_REPLACE_PREVIOUS RFABRIC_CONFIG_OVERRIDES
+
+say "GitHub training action: a tag push launches"
+github_event push refs/tags/train/v1 "$work/push-event.json" "gh-train-tag-$run_id"
+github_training_steps gh-train-tag
+train_tag=$(output gh-train-tag run-id)
+check "a launch exits 0 (got $gh_code)" equal "$gh_code" 0
+check "the run records the tag" equal "$(run_record "$train_tag" | jq -r .ci.ref)" refs/tags/train/v1
+as_owner training-run cancel "$train_tag" > /dev/null 2>&1
+
+say "GitHub training action: a fork pull request's job cannot reach rFabric"
+github_event pull_request refs/pull/42/merge "$work/event.json" "gh-train-fork-$run_id"
+unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
+github_training_steps gh-train-fork
+check "exit 1 (got $gh_code)" equal "$gh_code" 1
+check "no run" equal "$(output gh-train-fork run-id)" ""
+check "the fork notice is an error annotation" contains "$work/gh-train-fork/publish.log" \
+  "::error title=rFabric::Not run: this pull request job cannot reach rFabric"
+unexport GITHUB_ ACTIONS_ RUNNER_ RFABRIC_
+
+# gitlab_pipeline <pipeline id>: the GitLab variables of one pipeline outside a merge request.
+gitlab_pipeline() {
+  export GITLAB_CI=true CI_PROJECT_URL=https://gitlab.com/acme/robot CI_PROJECT_ID=$gitlab_project_id \
+    CI_PROJECT_DIR=$gl_repo CI_COMMIT_SHA=$gl_sha CI_DEFAULT_BRANCH=main CI_PIPELINE_ID=$1 \
+    CI_PIPELINE_URL="https://gitlab.com/acme/robot/-/pipelines/$1" CI_API_V4_URL="$stub/api/v4" \
+    RFABRIC_ID_TOKEN=$gitlab_token
+}
+# gitlab_merge_request: the merge request variables on top.
+gitlab_merge_request() {
+  export CI_MERGE_REQUEST_IID=7 CI_MERGE_REQUEST_PROJECT_ID=$gitlab_project_id \
+    CI_MERGE_REQUEST_PROJECT_URL=https://gitlab.com/acme/robot CI_MERGE_REQUEST_REF_PATH=refs/merge-requests/7/head \
+    CI_MERGE_REQUEST_SOURCE_BRANCH_SHA=$gl_sha
+}
+# gitlab_training <name>: the template's script, then its after_script (CI_JOB_STATUS=success);
+# sets gl_code and gl_train (dotenv RFABRIC_RUN_ID).
+gl_train_dir="$gl_repo/rfabric-training-run"
+gitlab_training() {
+  (cd "$gl_repo" && provider "$root/scripts/gitlab.sh" run training-run) > "$work/$1.log" 2>&1
+  gl_code=$?
+  (cd "$gl_repo" && CI_JOB_STATUS=success provider "$root/scripts/gitlab.sh" after training-run) > "$work/$1-after.log" 2>&1
+  gl_train=$(sed -n 's/^RFABRIC_RUN_ID=//p' "$gl_train_dir/outputs.env")
+}
+
+# gitlab_sim <name>: the sim template's script, then its after_script (CI_JOB_STATUS=success);
+# sets gl_code and gl_job (dotenv RFABRIC_JOB_ID).
+gitlab_sim() {
+  (cd "$gl_repo" && provider "$root/scripts/gitlab.sh" run) > "$work/$1.log" 2>&1
+  gl_code=$?
+  (cd "$gl_repo" && CI_JOB_STATUS=success provider "$root/scripts/gitlab.sh" after) > "$work/$1-after.log" 2>&1
+  gl_job=$(sed -n 's/^RFABRIC_JOB_ID=//p' "$gl_repo/rfabric-sim-run/outputs.env")
+}
+
+say "GitLab template: a base-branch pipeline and a tag pipeline run the suite"
+inputs "$suite"
+gitlab_pipeline "7$run_id"
+export CI_COMMIT_BRANCH=main CI_COMMIT_REF_NAME=main
+gitlab_sim gitlab-sim-base
+check "base branch: a passing suite exits 0 (got $gl_code)" equal "$gl_code" 0
+check "base branch: the job records the branch" equal "$(job "$gl_job" | jq -r .ci.ref)" refs/heads/main
+unset CI_COMMIT_BRANCH
+export CI_PIPELINE_ID="8$run_id" CI_COMMIT_TAG=train/v1 CI_COMMIT_REF_NAME=train/v1
+gitlab_sim gitlab-sim-tag
+check "tag: a passing suite exits 0 (got $gl_code)" equal "$gl_code" 0
+check "tag: the job records the tag" equal "$(job "$gl_job" | jq -r .ci.ref)" refs/tags/train/v1
+unset CI_COMMIT_TAG CI_COMMIT_REF_NAME
+
+say "GitLab template: a merge request pipeline in the fork cannot reach rFabric"
+export CI_PIPELINE_ID="9$run_id"
+gitlab_merge_request
+export CI_PROJECT_ID=4343
+gitlab_sim gitlab-sim-fork
+check "exit 1 (got $gl_code)" equal "$gl_code" 1
+check "no job" equal "$gl_job" ""
+check "the summary asks for a trusted run" contains "$gl_repo/rfabric-sim-run/summary.md" "A trusted run on the same commit is needed"
+unexport GITLAB_ CI_ RFABRIC_
+
+say "GitLab training template: a merge request pipeline launches, dotenv"
+training_inputs "$gl_sha"
+gitlab_pipeline "3$run_id"
+gitlab_merge_request
+gitlab_training gitlab-train
+cat "$work/gitlab-train.log"
+check "a launch exits 0 (got $gl_code)" equal "$gl_code" 0
+check "dotenv: the four outputs" equal "$(cut -d= -f1 "$gl_train_dir/outputs.env" | tr '\n' ' ')" \
+  "RFABRIC_RUN_ID RFABRIC_STATUS RFABRIC_RUN_URL RFABRIC_BEST_CHECKPOINT_ID "
+check "dotenv RFABRIC_RUN_ID" matches "$gl_train" '^run_[0-9A-Za-z]{26}$'
+check "the run records the merge request provenance" equal \
+  "$(run_record "$gl_train" | jq -c '.ci | {repository, commit, pullRequest}')" \
+  "{\"repository\":\"https://gitlab.com/acme/robot\",\"commit\":\"$gl_sha\",\"pullRequest\":7}"
+as_owner training-run cancel "$gl_train" > /dev/null 2>&1
+
+say "GitLab training template: a canceled waiting job's after_script cancels the run"
+export CI_PIPELINE_ID="4$run_id" RFABRIC_WAIT=true RFABRIC_CONFIG_OVERRIDES='{"iterations": 100000}'
+rm -rf "$gl_train_dir"
+set -m
+(cd "$gl_repo" && provider "$root/scripts/gitlab.sh" run training-run) > "$work/gitlab-train-cancel.log" 2>&1 &
+script_pid=$!
+set +m
+if await_file "$gl_train_dir/run-id" "$script_pid"; then
+  # GitLab may stop the job without signalling the CLI: kill the whole job unannounced.
+  kill -KILL -- "-$script_pid"
+  wait "$script_pid" 2> /dev/null
+  cancelled=$(cat "$gl_train_dir/run-id")
+  (cd "$gl_repo" && CI_JOB_STATUS=canceled provider "$root/scripts/gitlab.sh" after training-run) \
+    > "$work/gitlab-train-cancel-after.log" 2>&1
+  check "after_script exits 0" equal "$?" 0
+  check "the run is cancelled" equal "$(run_status "$cancelled")" cancelled
+else
+  fail "the launch never wrote run-id"
+  cat "$work/gitlab-train-cancel.log"
+fi
+unset RFABRIC_WAIT RFABRIC_CONFIG_OVERRIDES
+unexport CI_MERGE_REQUEST_
+
+say "GitLab training template: a tag pipeline launches"
+export CI_PIPELINE_ID="5$run_id" CI_COMMIT_TAG=train/v1 CI_COMMIT_REF_NAME=train/v1
+gitlab_training gitlab-train-tag
+check "a launch exits 0 (got $gl_code)" equal "$gl_code" 0
+check "the run records the tag" equal "$(run_record "$gl_train" | jq -r .ci.ref)" refs/tags/train/v1
+as_owner training-run cancel "$gl_train" > /dev/null 2>&1
+unset CI_COMMIT_TAG CI_COMMIT_REF_NAME
+
+say "GitLab training template: a base-branch pipeline launches"
+export CI_PIPELINE_ID="10$run_id" CI_COMMIT_BRANCH=main CI_COMMIT_REF_NAME=main
+gitlab_training gitlab-train-base
+check "a launch exits 0 (got $gl_code)" equal "$gl_code" 0
+check "the run records the branch" equal "$(run_record "$gl_train" | jq -r .ci.ref)" refs/heads/main
+as_owner training-run cancel "$gl_train" > /dev/null 2>&1
+unset CI_COMMIT_BRANCH CI_COMMIT_REF_NAME
+
+say "GitLab training template: a merge request pipeline in the fork cannot reach rFabric"
+export CI_PIPELINE_ID="6$run_id"
+gitlab_merge_request
+export CI_PROJECT_ID=4343
+gitlab_training gitlab-train-fork
+check "exit 1 (got $gl_code)" equal "$gl_code" 1
+check "no run" equal "$gl_train" ""
+check "the summary asks for a trusted run" contains "$gl_train_dir/summary.md" "A trusted run on the same commit is needed"
+unexport GITLAB_ CI_ RFABRIC_
+
+# bitbucket_pipeline <pipeline uuid> [VARIABLE=value...]: the Bitbucket variables of one pipeline.
+bitbucket_pipeline() {
+  export BITBUCKET_BUILD_NUMBER=$((RANDOM + 1000)) BITBUCKET_COMMIT=$bb_sha \
+    BITBUCKET_GIT_HTTP_ORIGIN=http://bitbucket.org/acme/robot BITBUCKET_REPO_FULL_NAME=acme/robot \
+    BITBUCKET_PIPELINE_UUID=$1 BITBUCKET_CLONE_DIR=$bb_repo BITBUCKET_STEP_OIDC_TOKEN=$bitbucket_token \
+    RFABRIC_BITBUCKET_PROXY=$stub RFABRIC_BITBUCKET_API_URL="$stub/bitbucket/2.0" "${@:2}"
+}
+# bitbucket_training <name>: the pipe on the host; sets bb_code and bb_train.
+bitbucket_training() {
+  rm -f "$bb_repo/rfabric-result.json"
+  (cd "$bb_repo" && provider "$root/scripts/pipe.sh") > "$work/$1.log" 2>&1
+  bb_code=$?
+  bb_train=$(jq -r '."run-id"' "$bb_repo/rfabric-result.json")
+}
+training_marker_comments() {
+  count ".method == \"POST\" and .token == \"bitbucket-token\" and .url == \"$bb_comments\" and (.body.content.raw | startswith(\"$training_marker\n\"))"
+}
+
+# bitbucket_sim <name>: the sim pipe on the host; sets bb_code and bb_job.
+bitbucket_sim() {
+  rm -f "$bb_repo/rfabric-result.json"
+  (cd "$bb_repo" && provider "$root/scripts/pipe.sh") > "$work/$1.log" 2>&1
+  bb_code=$?
+  bb_job=$(jq -r '."job-id"' "$bb_repo/rfabric-result.json")
+}
+
+say "Bitbucket pipe: a base-branch pipeline and a tag pipeline run the suite"
+inputs "$suite"
+bitbucket_pipeline "{bb-sim-base-$run_id}" BITBUCKET_BRANCH=main
+bitbucket_sim pipe-sim-base
+check "base branch: a passing suite exits 0 (got $bb_code)" equal "$bb_code" 0
+check "base branch: the job" matches "$bb_job" '^evj_[0-9A-Za-z]{26}$'
+unexport BITBUCKET_
+bitbucket_pipeline "{bb-sim-tag-$run_id}" BITBUCKET_TAG=train/v1
+bitbucket_sim pipe-sim-tag
+check "tag: a passing suite exits 0 (got $bb_code)" equal "$bb_code" 0
+check "tag: the job" matches "$bb_job" '^evj_[0-9A-Za-z]{26}$'
+unexport BITBUCKET_
+
+say "Bitbucket pipe: a pull request pipeline without the identity token"
+bitbucket_pipeline "{bb-sim-fork-$run_id}" BITBUCKET_BRANCH=feature BITBUCKET_PR_ID=5
+unset BITBUCKET_STEP_OIDC_TOKEN
+bitbucket_sim pipe-sim-fork
+check "exit 1 (got $bb_code)" equal "$bb_code" 1
+check "no job" equal "$bb_job" ""
+check "the summary asks for a trusted run" contains "$bb_repo/test-results/rfabric/summary.md" "A trusted run on the same commit is needed"
+unexport BITBUCKET_ RFABRIC_
+
+say "Bitbucket pipe with RFABRIC_LAUNCH_TEMPLATE: a pull request pipeline launches"
+training_inputs "$bb_sha"
+bitbucket_pipeline "{bb-train-pr-$run_id}" BITBUCKET_BRANCH=feature BITBUCKET_PR_ID=5 RFABRIC_BITBUCKET_TOKEN=bitbucket-token
+bitbucket_training pipe-train-pr
+cat "$work/pipe-train-pr.log"
+check "a launch exits 0 (got $bb_code)" equal "$bb_code" 0
+check "rfabric-result.json: the four outputs" equal "$(jq -c 'keys_unsorted' "$bb_repo/rfabric-result.json")" \
+  '["run-id","status","run-url","best-checkpoint-id"]'
+check "rfabric-result.json run-id" matches "$bb_train" '^run_[0-9A-Za-z]{26}$'
+check "the run records the Bitbucket provenance" equal \
+  "$(run_record "$bb_train" | jq -c '.ci | {repository, commit, pullRequest}')" \
+  "{\"repository\":\"https://bitbucket.org/acme/robot\",\"commit\":\"$bb_sha\",\"pullRequest\":5}"
+check "one pull request comment, the launch template's marker first" equal "$(training_marker_comments)" 1
+check "no Code Insights report for a training run" equal \
+  "$(count "(.url | contains(\"/reports/rfabric-training-run\"))")" 0
+as_owner training-run cancel "$bb_train" > /dev/null 2>&1
+unexport BITBUCKET_ RFABRIC_BITBUCKET_TOKEN
+
+say "Bitbucket pipe with RFABRIC_LAUNCH_TEMPLATE: a tag pipeline launches"
+bitbucket_pipeline "{bb-train-tag-$run_id}" BITBUCKET_TAG=train/v1
+bitbucket_training pipe-train-tag
+check "a launch exits 0 (got $bb_code)" equal "$bb_code" 0
+check "rfabric-result.json run-id" matches "$bb_train" '^run_[0-9A-Za-z]{26}$'
+as_owner training-run cancel "$bb_train" > /dev/null 2>&1
+unexport BITBUCKET_
+
+say "Bitbucket pipe with RFABRIC_LAUNCH_TEMPLATE: a base-branch pipeline launches"
+bitbucket_pipeline "{bb-train-base-$run_id}" BITBUCKET_BRANCH=main
+bitbucket_training pipe-train-base
+check "a launch exits 0 (got $bb_code)" equal "$bb_code" 0
+check "rfabric-result.json run-id" matches "$bb_train" '^run_[0-9A-Za-z]{26}$'
+check "the run records the commit" equal "$(run_record "$bb_train" | jq -r .ci.commit)" "$bb_sha"
+as_owner training-run cancel "$bb_train" > /dev/null 2>&1
+unexport BITBUCKET_
+
+say "Bitbucket pipe with RFABRIC_LAUNCH_TEMPLATE: a pull request pipeline without the identity token"
+bitbucket_pipeline "{bb-train-fork-$run_id}" BITBUCKET_BRANCH=feature BITBUCKET_PR_ID=5
+unset BITBUCKET_STEP_OIDC_TOKEN
+bitbucket_training pipe-train-fork
+check "exit 1 (got $bb_code)" equal "$bb_code" 1
+check "no run" equal "$bb_train" ""
+unexport BITBUCKET_
+
+say "Bitbucket pipe image with RFABRIC_LAUNCH_TEMPLATE: a base-branch pipeline launches"
+bitbucket_pipeline "{bb-train-image-$run_id}" BITBUCKET_BRANCH=main
+rm -f "$bb_repo/rfabric-result.json"
+docker_pipe --rm > "$work/pipe-train-image.log" 2>&1
+code=$?
+cat "$work/pipe-train-image.log"
+bb_train=$(jq -r '."run-id"' "$bb_repo/rfabric-result.json" 2> /dev/null)
+check "a launch exits 0 (got $code)" equal "$code" 0
+check "rfabric-result.json run-id" matches "$bb_train" '^run_[0-9A-Za-z]{26}$'
+check "the run records the base branch" equal "$(run_record "$bb_train" | jq -r .ci.ref)" refs/heads/main
+as_owner training-run cancel "$bb_train" > /dev/null 2>&1
 unexport BITBUCKET_ RFABRIC_
 
 echo

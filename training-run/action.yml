@@ -1,0 +1,160 @@
+name: rFabric training run
+description: Launch an rFabric training run from a launch template, optionally on the trainer image this pipeline built, and optionally wait for it to end.
+author: rFabric
+branding:
+  icon: cpu
+  color: blue
+
+inputs:
+  launch-template:
+    description: "Launch template id or slug. With dir: the slug of the template's file."
+    required: true
+  experiment:
+    description: Experiment id the run belongs to.
+    required: true
+  dataset-versions:
+    description: Dataset version ids, comma or newline separated.
+    required: false
+    default: ""
+  base-model:
+    description: Base model id to fine-tune from.
+    required: false
+    default: ""
+  config-overrides:
+    description: "Training config overrides as a JSON object (the template's guardrails decide which keys are allowed)."
+    required: false
+    default: ""
+  compute-overrides:
+    description: "Compute overrides as a JSON object (the template's guardrails decide which keys are allowed)."
+    required: false
+    default: ""
+  run-tags:
+    description: "The training run's tags key=value, comma or newline separated."
+    required: false
+    default: ""
+  image:
+    description: "Trainer image <repository>@sha256:<digest> instead of the template's (the template must allow the image override)."
+    required: false
+    default: ""
+  code-version:
+    description: "The commit image was built from; only with image, never defaulted from the build."
+    required: false
+    default: ""
+  dir:
+    description: "Definition directory of launch template files (e.g. training). A pull request first runs the apply preview (problems fail the step); a run on base-branch first applies the directory, with image and code-version for launch-template."
+    required: false
+    default: ""
+  base-branch:
+    description: "Branch whose runs apply dir (default: the repository's default branch)."
+    required: false
+    default: ""
+  wait:
+    description: "true: wait until the run ends; the step passes only when it completes."
+    required: false
+    default: "false"
+  wait-timeout:
+    description: "With wait: how long to wait (a duration, e.g. 6h); the run keeps going after a timeout."
+    required: false
+    default: ""
+  replace-previous:
+    description: "true: cancel the runs this repository launched earlier from the same ref and launch template before launching."
+    required: false
+    default: "false"
+  workspace:
+    description: "Workspace id (default: the credential's workspace)."
+    required: false
+    default: ""
+  profile:
+    description: CLI profile (production, staging, dev).
+    required: false
+    default: production
+  api-url:
+    description: Explicit API URL instead of profile.
+    required: false
+    default: ""
+  auth-url:
+    description: Explicit auth URL instead of profile.
+    required: false
+    default: ""
+  client-id:
+    description: "Service credential client id, used on every run but a pull request's when pull-request-client-id is set. Without client-secret the CLI exchanges the job's identity token (needs `permissions: id-token: write`)."
+    required: true
+  pull-request-client-id:
+    description: "Service credential client id used on pull request runs: a credential that trusts pull requests and cannot configure launch templates (default: client-id)."
+    required: false
+    default: ""
+  client-secret:
+    description: Secret, only for a credential without a trust.
+    required: false
+    default: ""
+  cli-version:
+    description: "CLI version (default: the version this action release pins)."
+    required: false
+    default: ""
+  comment:
+    description: Create or update one pull request comment per launch template.
+    required: false
+    default: "true"
+
+outputs:
+  run-id:
+    description: Training run id.
+    value: ${{ steps.publish.outputs.run-id }}
+  status:
+    description: "The run's status: as launched, or its terminal status with wait."
+    value: ${{ steps.publish.outputs.status }}
+  run-url:
+    description: The training run's page.
+    value: ${{ steps.publish.outputs.run-url }}
+  best-checkpoint-id:
+    description: "The run's best checkpoint (with wait, when it has one)."
+    value: ${{ steps.publish.outputs.best-checkpoint-id }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install the rFabric CLI
+      shell: bash
+      env:
+        RFABRIC_CLI_VERSION: ${{ inputs.cli-version }}
+      run: '"$GITHUB_ACTION_PATH/../scripts/github.sh" install'
+
+    # exec: the runner signals this step's process on cancel; it must be the script that
+    # forwards the signal to the CLI.
+    - name: Run the training
+      id: run
+      shell: bash
+      env:
+        RFABRIC_LAUNCH_TEMPLATE: ${{ inputs.launch-template }}
+        RFABRIC_EXPERIMENT: ${{ inputs.experiment }}
+        RFABRIC_DATASET_VERSIONS: ${{ inputs.dataset-versions }}
+        RFABRIC_BASE_MODEL: ${{ inputs.base-model }}
+        RFABRIC_CONFIG_OVERRIDES: ${{ inputs.config-overrides }}
+        RFABRIC_COMPUTE_OVERRIDES: ${{ inputs.compute-overrides }}
+        RFABRIC_RUN_TAGS: ${{ inputs.run-tags }}
+        RFABRIC_IMAGE: ${{ inputs.image }}
+        RFABRIC_CODE_VERSION: ${{ inputs.code-version }}
+        RFABRIC_DIR: ${{ inputs.dir }}
+        RFABRIC_BASE_BRANCH: ${{ inputs.base-branch }}
+        RFABRIC_WAIT: ${{ inputs.wait }}
+        RFABRIC_WAIT_TIMEOUT: ${{ inputs.wait-timeout }}
+        RFABRIC_REPLACE_PREVIOUS: ${{ inputs.replace-previous }}
+        RFABRIC_WORKSPACE: ${{ inputs.workspace }}
+        RFABRIC_PROFILE: ${{ inputs.profile }}
+        RFABRIC_API_URL: ${{ inputs.api-url }}
+        RFABRIC_AUTH_URL: ${{ inputs.auth-url }}
+        RFABRIC_CLIENT_ID: ${{ inputs.client-id }}
+        RFABRIC_PULL_REQUEST_CLIENT_ID: ${{ inputs.pull-request-client-id }}
+        RFABRIC_CLIENT_SECRET: ${{ inputs.client-secret }}
+      run: exec "$GITHUB_ACTION_PATH/../scripts/github.sh" run training-run
+
+    - name: Publish the result
+      id: publish
+      if: always()
+      shell: bash
+      env:
+        RFABRIC_LAUNCH_TEMPLATE: ${{ inputs.launch-template }}
+        RFABRIC_COMMENT: ${{ inputs.comment }}
+        RFABRIC_RESULT_DIR: ${{ steps.run.outputs.dir }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: '"$GITHUB_ACTION_PATH/../scripts/github.sh" publish training-run'

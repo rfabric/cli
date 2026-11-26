@@ -1,21 +1,16 @@
 #!/usr/bin/env bash
-# The plumbing every rFabric CI wrapper shares (GitHub Action, GitLab template, Bitbucket pipe):
-# choose the `rfabric` commands for the run, map the wrapper inputs to their flags, run them, and
-# read their results into the outputs. Every behavior (auth, CI provenance, idempotency,
-# registration, apply preview, apply, preflight, launch, wait, test run, cancel on interrupt,
-# JUnit, markdown, exit codes) is the CLI's. `source sim-run.sh` defines the functions below
-# (the provider scripts).
+# The simulation run script every rFabric CI wrapper shares (GitHub Action, GitLab template,
+# Bitbucket pipe): choose the `rfabric` commands for the run, map the wrapper inputs to their
+# flags, run them, and read their results into the outputs. Every behavior (auth, CI provenance,
+# idempotency, registration, apply preview, apply, preflight, launch, wait, test run, cancel on
+# interrupt, JUnit, markdown, exit codes) is the CLI's. `source sim-run.sh` sources ci-job.sh
+# (the run's event, client id, fork refusal, signal forwarding, result directory, outputs) and
+# defines the run script functions ci-job.sh names (the provider scripts run it with ci_run).
 #
 # Inputs: the wrapper inputs as RFABRIC_ + the input name in upper snake case (suite ->
-# RFABRIC_SUITE, base-branch -> RFABRIC_BASE_BRANCH). The CLI itself reads RFABRIC_CLIENT_ID,
-# RFABRIC_CLIENT_SECRET, RFABRIC_WORKSPACE, RFABRIC_PROFILE, RFABRIC_API_URL, RFABRIC_AUTH_URL
-# and the CI provider's identity token. On a pull request, a non-empty
-# RFABRIC_PULL_REQUEST_CLIENT_ID replaces RFABRIC_CLIENT_ID (use_pull_request_client_id).
-#
-# The provider script sets before sim_run: run_event (pull_request; base_branch: any other run
-# on the base branch; other), base_branch (the base-branch input, else the provider's default
-# branch), identity_token (true when the job holds an identity token the CLI can exchange) and
-# fork_run (true when the provider says the job runs in a fork of the repository).
+# RFABRIC_SUITE, base-branch -> RFABRIC_BASE_BRANCH); ci-job.sh lists what the CLI reads itself.
+# The run's event is ci-job.sh's run_event, base_branch, identity_token and fork_run, which the
+# provider script's detect_run sets before ci_run.
 #
 # One suite (suite input): register (with image), preflight, `sim run <suite> --wait`.
 # Definition directory (dir input), by run_event:
@@ -24,15 +19,12 @@
 #                 auto, `eval test-run --changed` (non-blocking: never the step's exit code)
 #   base_branch   `eval apply`, then `sim run --dir`
 #   other         `sim run --dir`
-# A pull request without an identity token and without client-secret (a fork), or a fork run,
-# ends before any CLI call with the notice that a trusted run on the same commit is needed.
+# A pull request that cannot reach rFabric (ci-job.sh fork_pull_request) ends before any CLI
+# call with the notice that a trusted run on the same commit is needed.
 #
-# sim_run writes into <result-dir>:
-#   notice.md            why the run cannot reach rFabric (a fork pull request)
+# The run writes into <result-dir>, beside ci-job.sh's files:
 #   artifact.json        the artifact registered from image
 #   preflight.json       one suite: the launch preflight
-#   definitions.json     dir: the apply preview (pull request) or apply (base branch) result
-#   definitions.md       its markdown; definitions-exit-code: its exit code
 #   job-id               the evaluation job ids of the blocking run, one per line, each written
 #                        as its launch answers
 #   report.json          the wait's JSON output: one suite: the report and its failedCases;
@@ -47,100 +39,28 @@
 #                        report), the definitions' changes and the test run
 #   outputs.json         the outputs: job-id, report-id, conclusion, operational-classification,
 #                        job-url (one suite), artifact-id, suites (each suite's result)
-#   exit-code            the exit code
 
 set -uo pipefail
 
-# The profile input defaults to production (the CLI resolves its built-in profiles itself).
-export RFABRIC_PROFILE="${RFABRIC_PROFILE:-production}"
+# shellcheck source=ci-job.sh
+source "$(dirname "${BASH_SOURCE[0]}")/ci-job.sh"
+run_script=sim-run
 
 # The wall deadline when the wall-deadline input is empty, and how much longer than the
 # deadline the CLI waits, so the job reaches its deadline and reports before the wait expires.
 default_wall_deadline=7200
 wait_margin=300
 
-# Set by the provider script (see above).
-run_event=other
-base_branch=""
-identity_token=false
-fork_run=false
-
-# rfabric_children are the CLI processes `start` runs; the traps send them the SIGINT or SIGTERM
-# this shell receives, so an interrupted wait reaches each CLI, which cancels its jobs.
-rfabric_children=()
-forward_signal() {
-  local pid
-  for pid in "${rfabric_children[@]}"; do kill -s "$1" "$pid" 2> /dev/null; done
-  return 0
-}
-trap 'forward_signal INT' INT
-trap 'forward_signal TERM' TERM
-
-# start <command...>: runs the command in the background as a child the traps signal; sets
-# started to its pid. Redirections of the call apply to the command. Bash starts background
-# commands with SIGINT ignored; the CLI installs its own handler.
-started=""
-start() {
-  "$@" &
-  started=$!
-  rfabric_children+=("$started")
-}
-
-# finish <pid>: waits for a started command; returns its exit code.
-finish() {
-  local pid=$1 code child kept=()
-  while :; do
-    wait "$pid"
-    code=$?
-    kill -0 "$pid" 2> /dev/null || break
-  done
-  for child in "${rfabric_children[@]}"; do [[ $child == "$pid" ]] || kept+=("$child"); done
-  rfabric_children=("${kept[@]}")
-  return "$code"
-}
-
-# forwarding <command...>: start, then finish; returns the command's exit code.
-forwarding() {
-  start "$@"
-  finish "$started"
-}
-
-# usage_error <message>: prints the message; returns the CLI's usage exit code.
-usage_error() {
-  printf 'rfabric sim run: %s\n' "$1" >&2
-  return 2
-}
-
-# record_job_id <file>: copies stderr through and appends the evaluation job id of each launch
-# line (`Simulation job evj_...`) to <file>. It ignores SIGINT and SIGTERM: it must outlive the
-# CLI's cancellation, whose output it carries.
-record_job_id() {
-  local line
-  trap '' INT TERM
-  while IFS= read -r line || [[ -n $line ]]; do
-    printf '%s\n' "$line" >&2
-    if [[ $line =~ Simulation\ job\ (evj_[0-9A-Za-z]{26}) ]]; then
-      printf '%s\n' "${BASH_REMATCH[1]}" >> "$1"
-    fi
-  done
-}
+# launch_line: the CLI's line for each evaluation job it launches; its group is the job id.
+launch_line='Simulation job (evj_[0-9A-Za-z]{26})'
 
 # label_test_run: copies its input to stderr, each line prefixed `test run: `, so the test run's
 # output stays apart from the blocking run's in the job log. Ignores SIGINT and SIGTERM, as
-# record_job_id does.
+# record_launch does.
 label_test_run() {
   local line
   trap '' INT TERM
   while IFS= read -r line || [[ -n $line ]]; do printf 'test run: %s\n' "$line" >&2; done
-}
-
-# list_flags <flag> <list>: the flag once per item of a comma or newline separated list.
-list_flags() {
-  local item
-  while IFS= read -r item; do
-    item=${item//[[:space:]]/}
-    [[ -n $item ]] && printf '%s\0%s\0' "$1" "$item"
-  done <<< "${2//,/$'\n'}"
 }
 
 # run_key: what the run checks, for comment markers, artifact and report names: the suite, or
@@ -158,62 +78,45 @@ run_title() {
   fi
 }
 
-# use_pull_request_client_id: on a pull request, the pull-request-client-id input, when set,
-# becomes the client id the CLI signs in with; every other run keeps client-id. Call it after
-# the provider's detect_run.
-use_pull_request_client_id() {
-  if [[ $run_event == pull_request && -n ${RFABRIC_PULL_REQUEST_CLIENT_ID:-} ]]; then
-    export RFABRIC_CLIENT_ID=$RFABRIC_PULL_REQUEST_CLIENT_ID
-  fi
-  return 0
+# run_outputs: the output names, in publishing order.
+run_outputs() {
+  printf '%s\n' job-id report-id conclusion operational-classification job-url artifact-id suites
 }
 
-# fork_notice <result-dir>: writes notice.md and prints it: the pull request cannot reach rFabric.
-fork_notice() {
-  {
-    printf '### %s\n\n' "$(run_title)"
-    printf 'Not run: this pull request job cannot reach rFabric. It holds no identity token and no client-secret, '
-    printf 'as a pull request from a fork never does (or the job runs in the fork). '
-    printf 'A trusted run on the same commit is needed: a maintainer pushes the commit to a branch of this repository '
-    printf 'and opens the pull request from it, so its pipeline runs with the credential.\n'
-  } > "$1/notice.md"
-  printf 'rfabric: %s\n' "$(sed -n 3p "$1/notice.md")" >&2
-}
-
-# sim_run_steps <result-dir>: the whole run; returns the step's exit code.
-sim_run_steps() {
+# run_steps <result-dir>: the whole run; returns the step's exit code.
+run_steps() {
   local dir=$1 candidate=${RFABRIC_CANDIDATE:-} image=${RFABRIC_IMAGE:-}
   local wall_deadline=${RFABRIC_WALL_DEADLINE:-$default_wall_deadline}
   local args=() launch=() flag
 
   if [[ -n ${RFABRIC_SUITE:-} && -n ${RFABRIC_DIR:-} ]] || [[ -z ${RFABRIC_SUITE:-} && -z ${RFABRIC_DIR:-} ]]; then
-    usage_error "set exactly one of the suite and dir inputs"
+    usage_error "sim run" "set exactly one of the suite and dir inputs"
     return
   fi
-  [[ -n ${RFABRIC_CLIENT_ID:-} ]] || { usage_error "the client-id input is required"; return; }
+  [[ -n ${RFABRIC_CLIENT_ID:-} ]] || { usage_error "sim run" "the client-id input is required"; return; }
   use_pull_request_client_id
   if [[ -n $image && -n $candidate ]] || [[ -z $image && -z $candidate ]]; then
-    usage_error "set exactly one of the image and candidate inputs"
+    usage_error "sim run" "set exactly one of the image and candidate inputs"
     return
   fi
-  [[ $wall_deadline =~ ^[0-9]+$ ]] || { usage_error "wall-deadline must be a number of seconds, got '$wall_deadline'"; return; }
+  [[ $wall_deadline =~ ^[0-9]+$ ]] || { usage_error "sim run" "wall-deadline must be a number of seconds, got '$wall_deadline'"; return; }
   if [[ -n ${RFABRIC_DIR:-} ]]; then
-    [[ -z ${RFABRIC_CELLS:-} ]] || { usage_error "the cells input goes with suite; dir runs each suite's matrix"; return; }
+    [[ -z ${RFABRIC_CELLS:-} ]] || { usage_error "sim run" "the cells input goes with suite; dir runs each suite's matrix"; return; }
     case ${RFABRIC_TEST_RUN:-auto} in
       auto | false) ;;
-      *) usage_error "test-run must be auto or false, got '$RFABRIC_TEST_RUN'"; return ;;
+      *) usage_error "sim run" "test-run must be auto or false, got '$RFABRIC_TEST_RUN'"; return ;;
     esac
   elif [[ -n ${RFABRIC_SUITES:-}${RFABRIC_TAGS:-} ]]; then
-    usage_error "the suites and tags inputs go with dir"
+    usage_error "sim run" "the suites and tags inputs go with dir"
     return
   fi
   if [[ ${RFABRIC_BASELINE:-} == auto && -z $base_branch ]]; then
-    usage_error "baseline auto reads the base branch: set the base-branch input"
+    usage_error "sim run" "baseline auto reads the base branch: set the base-branch input"
     return
   fi
 
-  if [[ $run_event == pull_request ]] && { [[ $fork_run == true ]] || [[ $identity_token != true && -z ${RFABRIC_CLIENT_SECRET:-} ]]; }; then
-    fork_notice "$dir"
+  if fork_pull_request; then
+    fork_notice "$dir" "$(run_title)"
     return 1
   fi
 
@@ -249,28 +152,19 @@ sim_run_steps() {
   forwarding rfabric "${args[@]}" --preflight --output json > "$dir/preflight.json" || return
   forwarding rfabric "${args[@]}" --wait --wait-timeout "$((wall_deadline + wait_margin))s" \
     --junit "$dir/junit.xml" --markdown "$dir/scorecard.md" --output json \
-    > "$dir/report.json" 2> >(record_job_id "$dir/job-id")
+    > "$dir/report.json" 2> >(record_launch "$launch_line" "$dir/job-id")
 }
 
 # directory_steps <result-dir> <candidate> <wall deadline> <launch flags...>: the definition
 # directory's commands for run_event; returns the step's exit code: the definitions command's
 # when it fails, else the blocking run's.
 directory_steps() {
-  local dir=$1 candidate=$2 wall_deadline=$3 code selection=() args=() flag test_run="" definitions=()
+  local dir=$1 candidate=$2 wall_deadline=$3 code selection=() args=() flag test_run=""
   shift 3
   while IFS= read -r -d '' flag; do selection+=("$flag"); done \
     < <(list_flags --suite "${RFABRIC_SUITES:-}"; list_flags --tag "${RFABRIC_TAGS:-}")
 
-  case $run_event in
-    pull_request) definitions=(eval apply --dir "$RFABRIC_DIR" --preview) ;;
-    base_branch) definitions=(eval apply --dir "$RFABRIC_DIR") ;;
-  esac
-  if [[ ${#definitions[@]} -gt 0 ]]; then
-    forwarding rfabric "${definitions[@]}" --markdown "$dir/definitions.md" --output json > "$dir/definitions.json"
-    code=$?
-    printf '%s\n' "$code" > "$dir/definitions-exit-code"
-    [[ $code -eq 0 ]] || return "$code"
-  fi
+  apply_definitions "$dir" eval || return
 
   if [[ $run_event == pull_request && ${RFABRIC_TEST_RUN:-auto} == auto ]] && definitions_changed "$dir" entries; then
     args=(eval test-run --dir "$RFABRIC_DIR" --candidate "$candidate" --changed "${selection[@]}"
@@ -284,7 +178,7 @@ directory_steps() {
 
   forwarding rfabric sim run --dir "$RFABRIC_DIR" "$@" "${selection[@]}" \
     --wait-timeout "$((wall_deadline + wait_margin))s" --junit-dir "$dir" --markdown "$dir/scorecard.md" --output json \
-    > "$dir/report.json" 2> >(record_job_id "$dir/job-id")
+    > "$dir/report.json" 2> >(record_launch "$launch_line" "$dir/job-id")
   code=$?
 
   if [[ -n $test_run ]]; then
@@ -292,14 +186,6 @@ directory_steps() {
     printf '%s\n' "$?" > "$dir/test-run-exit-code"
   fi
   return "$code"
-}
-
-# definitions_changed <result-dir> <entries|any>: the definitions result changes a definition
-# (entries: an entry not unchanged; any: that, or a definition no longer in the directory).
-definitions_changed() {
-  [[ -s $1/definitions.json ]] && jq -e --arg what "$2" \
-    'any(.entries[]?; .action != "unchanged") or ($what == "any" and ((.removed // []) | length) > 0)' \
-    "$1/definitions.json" > /dev/null 2>&1
 }
 
 # has_report <result-dir> / preflight_blocked <result-dir>: what ended a one-suite run. The file
@@ -331,10 +217,10 @@ job_urls() {
   done < <(sort -u "$1/job-id")
 }
 
-# sim_run_finish <result-dir> <exit-code>: writes outputs.json, summary.md and exit-code. jq
-# reads the report from its file, never from an argument: a report with many failed cases
-# passes the size limit of one argument.
-sim_run_finish() {
+# run_finish <result-dir> <exit-code>: writes outputs.json and summary.md. jq reads the report
+# from its file, never from an argument: a report with many failed cases passes the size limit
+# of one argument.
+run_finish() {
   local dir=$1 code=$2 job_id="" report=/dev/null artifact_id=""
   [[ -s $dir/job-id ]] && job_id=$(head -n 1 "$dir/job-id")
   if has_report "$dir" || has_suite_records "$dir"; then
@@ -388,7 +274,6 @@ sim_run_finish() {
       fi
     } > "$dir/summary.md"
   fi
-  printf '%s\n' "$code" > "$dir/exit-code"
 }
 
 # directory_summary <result-dir> <exit-code>: a definition directory run's summary: the blocking
@@ -402,12 +287,7 @@ directory_summary() {
   elif [[ $definitions_code -eq 0 ]]; then
     printf '### %s\n\nThe run ended before a launch (rfabric exit code %s); the job log says why.\n' "$(run_title)" "$code"
   fi
-  if [[ -s $dir/definitions.md ]] && { [[ $definitions_code -ne 0 ]] || definitions_changed "$dir" any; }; then
-    printf '\n'
-    cat "$dir/definitions.md"
-  elif [[ $definitions_code -ne 0 ]]; then
-    printf '### %s\n\nThe definitions could not be read (rfabric exit code %s); the job log says why.\n' "$(run_title)" "$definitions_code"
-  fi
+  definitions_summary "$dir" "$definitions_code"
   if [[ -s $dir/test-run-exit-code ]]; then
     test_run_code=$(< "$dir/test-run-exit-code")
     printf '\n'
@@ -420,53 +300,11 @@ directory_summary() {
   fi
 }
 
-# sim_run <result-dir>: the whole run; returns the exit code.
-sim_run() {
-  local dir=$1 code
-  mkdir -p "$dir" || return 1
-  rm -f "$dir"/*.xml "$dir"/*.md "$dir"/*.json "$dir"/{job-id,exit-code,definitions-exit-code,test-run-exit-code}
-  sim_run_steps "$dir"
-  code=$?
-  sim_run_finish "$dir" "$code"
-  return "$code"
-}
-
-# output_value <result-dir> <output name>: one output, empty when unset; a JSON value compact.
-output_value() {
-  jq -r --arg name "$2" '.[$name] // "" | if type == "string" then . else tojson end' "$1/outputs.json" 2> /dev/null
-}
-
-# comment_marker: the hidden first line of the run's pull request comment, by which the
-# wrappers find it again (github.sh, gitlab.sh) and readers find the pipe's comments.
-comment_marker() {
-  printf '<!-- rfabric-sim-run:%s -->' "$(run_key)"
-}
-
-# comment_body <result-dir> <marker>: the pull request comment, the marker then summary.md,
-# cut below the smallest provider limit.
-comment_body() {
-  printf '%s\n' "$2"
-  head -c 60000 "$1/summary.md"
-}
-
-# slug <text>: the text with every character outside [A-Za-z0-9._-] replaced by '-', for
-# names a provider restricts (artifact names, report ids).
-slug() {
-  printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '-'
-}
-
-# api_call <method> <url> <json body or empty> [curl options...]: one REST call of a provider
-# script; prints the response body, sets api_status to the HTTP status (000 when unreachable)
-# and returns 0 on a 2xx answer. Call it outside $(...) to read api_status. curl reads the body
-# from stdin, never from an argument: a large body passes the size limit of one argument.
-api_status=""
-api_call() {
-  local method=$1 url=$2 body=$3 response
-  shift 3
-  local options=("$@")
-  [[ -n $body ]] && options+=(-H "Content-Type: application/json" --data-binary @-)
-  response=$(printf '%s' "$body" | curl -sS -X "$method" "${options[@]}" -w '\n%{http_code}' "$url")
-  api_status=${response##*$'\n'}
-  printf '%s' "${response%$'\n'*}"
-  [[ $api_status == 2?? ]]
+# cancel_launched <result-dir>: cancels the blocking run's evaluation jobs.
+cancel_launched() {
+  local job_id
+  [[ -s $1/job-id ]] || return 0
+  while IFS= read -r job_id; do
+    forwarding rfabric evaluation-job cancel "$job_id" --output json > /dev/null
+  done < <(sort -u "$1/job-id")
 }
