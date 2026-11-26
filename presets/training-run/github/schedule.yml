@@ -1,0 +1,57 @@
+# rFabric training preset: schedule. Every night it builds the trainer image from the base branch
+# and launches a training run on it (scheduled workflows run on the default branch). Copy to
+# .github/workflows/; ADAPT marks what to change. Repository variables: TRAINING_CLIENT_ID,
+# TRAINING_EXPERIMENT_ID, TRAINING_DATASET_VERSIONS. Environment gpu-training: its required
+# reviewers approve before GPU spend.
+name: Train (schedule)
+on:
+  schedule:
+    - cron: "0 2 * * *" # ADAPT: 02:00 UTC every day
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.repository.outputs.name }}@${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v5
+      # ghcr.io takes lowercase repository names only.
+      - id: repository
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}/trainer" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      # The trainer image, pushed and passed on by digest. ADAPT: context and Dockerfile.
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ steps.repository.outputs.name }}:${{ github.sha }}
+
+  train:
+    needs: build
+    runs-on: ubuntu-latest
+    # Required reviewers on this environment approve the run before GPU spend.
+    environment: gpu-training
+    permissions:
+      contents: read
+      id-token: write # the identity token the CLI exchanges
+    steps:
+      - uses: rfabric/cli/training-run@v0.1
+        with:
+          launch-template: trainer # ADAPT
+          experiment: ${{ vars.TRAINING_EXPERIMENT_ID }}
+          dataset-versions: ${{ vars.TRAINING_DATASET_VERSIONS }}
+          image: ${{ needs.build.outputs.image }}
+          # The commit the image was built from: the default branch's commit, GITHUB_SHA.
+          code-version: ${{ github.sha }}
+          client-id: ${{ vars.TRAINING_CLIENT_ID }}

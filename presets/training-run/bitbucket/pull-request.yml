@@ -1,0 +1,41 @@
+# rFabric training preset: every pull request push. Each pull request pipeline builds the trainer
+# image and launches a short CPU training run of a dedicated template in the pull request
+# workspace, replacing the run of the previous push. Copy into bitbucket-pipelines.yml; ADAPT
+# marks what to change. The commit the image was built from is the pull request pipeline's
+# commit, BITBUCKET_COMMIT: the source branch's head.
+# Repository variables: TRAINING_PULL_REQUEST_CLIENT_ID (a credential of the pull request
+# workspace), TRAINING_PULL_REQUEST_WORKSPACE_ID, TRAINING_PULL_REQUEST_EXPERIMENT_ID,
+# TRAINING_PULL_REQUEST_DATASET_VERSIONS, TRAINING_BITBUCKET_TOKEN (optional: the pull request
+# comment), DOCKER_USERNAME, DOCKER_PASSWORD.
+definitions:
+  steps:
+    - step: &train
+        name: Build the trainer and launch a short CPU training run
+        services: [docker]
+        oidc:
+          audiences:
+            - https://auth.rfabric.io # ADAPT: the trust's audience
+        script:
+          # The trainer image, pushed and passed on by digest. ADAPT: registry, repository,
+          # Dockerfile; DOCKER_USERNAME and DOCKER_PASSWORD are secured repository variables.
+          - export TRAINER_REPOSITORY=docker.io/acme/trainer
+          - echo "$DOCKER_PASSWORD" | docker login --username "$DOCKER_USERNAME" --password-stdin docker.io
+          - docker build --file Dockerfile --tag "$TRAINER_REPOSITORY:$BITBUCKET_COMMIT" .
+          - docker push "$TRAINER_REPOSITORY:$BITBUCKET_COMMIT"
+          - export TRAINER_IMAGE=$(docker inspect --format '{{index .RepoDigests 0}}' "$TRAINER_REPOSITORY:$BITBUCKET_COMMIT")
+          - pipe: docker://ghcr.io/rfabric/cli:0.1
+            variables:
+              RFABRIC_LAUNCH_TEMPLATE: trainer-pull-request-cpu # ADAPT: the short CPU training template
+              RFABRIC_EXPERIMENT: $TRAINING_PULL_REQUEST_EXPERIMENT_ID
+              RFABRIC_DATASET_VERSIONS: $TRAINING_PULL_REQUEST_DATASET_VERSIONS
+              RFABRIC_WORKSPACE: $TRAINING_PULL_REQUEST_WORKSPACE_ID
+              RFABRIC_REPLACE_PREVIOUS: "true"
+              RFABRIC_CLIENT_ID: $TRAINING_PULL_REQUEST_CLIENT_ID
+              RFABRIC_BITBUCKET_TOKEN: $TRAINING_BITBUCKET_TOKEN
+              RFABRIC_IMAGE: $TRAINER_IMAGE
+              RFABRIC_CODE_VERSION: $BITBUCKET_COMMIT
+
+pipelines:
+  pull-requests:
+    "**":
+      - step: *train

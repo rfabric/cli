@@ -1,7 +1,7 @@
-name: rFabric sim run
+name: rFabric
 image: ghcr.io/rfabric/cli:0.1.14
 category: Testing
-description: Run rFabric simulation suites, one suite or a definition directory's, against a candidate image or artifact and gate the step on the verdict, with a Code Insights report, JUnit test results and rfabric-result.json.
+description: Run rFabric simulation suites against a candidate image or artifact and gate the step on the verdict (Code Insights report, JUnit test results), or, with RFABRIC_LAUNCH_TEMPLATE, launch a training run on the trainer image the pipeline built; outputs in rfabric-result.json.
 repository: https://github.com/rfabric/cli
 maintainer:
   name: rFabric
@@ -14,29 +14,34 @@ tags:
   - simulation
   - evaluation
   - testing
-# Pipe variables. Secretless: the step sets `oidc: audiences:` to the trust's audience, and
-# the CLI exchanges BITBUCKET_STEP_OIDC_TOKEN. JUnit results go to
-# test-results/rfabric/, the outputs (job-id, report-id, conclusion, operational-classification,
-# job-url, artifact-id, suites) to rfabric-result.json in the clone directory; the step exits
-# with the CLI's exit code.
+  - training
+# Pipe variables. One image, two runs: with RFABRIC_LAUNCH_TEMPLATE the pipe launches a training
+# run (the training variables below), else it runs simulation suites (the sim variables).
+# RFABRIC_DIR, RFABRIC_IMAGE and RFABRIC_BASE_BRANCH serve both, with the meaning
+# their description gives per run. Secretless: the step sets `oidc: audiences:` to the trust's
+# audience, and the CLI exchanges BITBUCKET_STEP_OIDC_TOKEN. The outputs go to
+# rfabric-result.json in the clone directory (sim: job-id, report-id, conclusion,
+# operational-classification, job-url, artifact-id, suites; training: run-id, status, run-url,
+# best-checkpoint-id), a sim run's JUnit results to test-results/rfabric/; the step exits with
+# the CLI's exit code.
 variables:
   - name: RFABRIC_SUITE
     description: Sim suite slug, slug@version or id. Set this or RFABRIC_DIR.
   - name: RFABRIC_DIR
-    description: "Definition directory (e.g. eval): runs its approved suites. A pull request pipeline first runs the apply preview (problems fail the step) and test-runs changed definitions; a pipeline on RFABRIC_BASE_BRANCH first applies the directory. Set this or RFABRIC_SUITE."
+    description: "Definition directory. Sim (e.g. eval): runs its approved suites; a pull request pipeline first runs the apply preview (problems fail the step) and test-runs changed definitions; a pipeline on RFABRIC_BASE_BRANCH first applies the directory. Set this or RFABRIC_SUITE. Training (e.g. training, launch template files): a pull request pipeline runs the apply preview first, a pipeline on RFABRIC_BASE_BRANCH applies it with RFABRIC_IMAGE and RFABRIC_CODE_VERSION for RFABRIC_LAUNCH_TEMPLATE."
   - name: RFABRIC_SUITES
     description: With RFABRIC_DIR, suite slugs to run, comma or newline separated.
     default: every approved suite
   - name: RFABRIC_TAGS
-    description: With RFABRIC_DIR, run only the suites carrying any of these tags, comma or newline separated.
+    description: Sim, with RFABRIC_DIR, run only the suites carrying any of these tags, comma or newline separated.
   - name: RFABRIC_BASE_BRANCH
-    description: Branch whose pipelines apply RFABRIC_DIR and whose passing jobs RFABRIC_BASELINE auto reads. Bitbucket gives a step no default branch; set it when yours is not main.
+    description: Branch whose pipelines apply RFABRIC_DIR and (sim) whose passing jobs RFABRIC_BASELINE auto reads. Bitbucket gives a step no default branch; set it when yours is not main.
     default: main
   - name: RFABRIC_TEST_RUN
     description: With RFABRIC_DIR, on a pull request that changes a definition, auto test-runs the changed suites (reported as not yet approved, never fails the step); false skips the test run.
     default: auto
   - name: RFABRIC_IMAGE
-    description: Candidate image <repository>@sha256:<digest>, registered with `rfabric artifact-build register`. Set this or RFABRIC_CANDIDATE.
+    description: Sim, the candidate image <repository>@sha256:<digest>, registered with `rfabric artifact-build register` (set this or RFABRIC_CANDIDATE); training, the trainer image instead of the template's.
   - name: RFABRIC_CANDIDATE
     description: Candidate artifact id instead of RFABRIC_IMAGE.
   - name: RFABRIC_WEIGHTS
@@ -84,3 +89,27 @@ variables:
     description: Secret, only for a credential without a trust (a secured repository variable).
   - name: RFABRIC_BITBUCKET_TOKEN
     description: Access token with pull request write access; when set on a pull request pipeline, the pipe posts one new pull request comment per run and never edits a comment.
+  - name: RFABRIC_LAUNCH_TEMPLATE
+    description: "Training: launch template id or slug; setting it makes the pipe launch a training run. With RFABRIC_DIR, the slug of the template's file."
+  - name: RFABRIC_EXPERIMENT
+    description: "Training: experiment id the run belongs to (required)."
+  - name: RFABRIC_DATASET_VERSIONS
+    description: "Training: dataset version ids, comma or newline separated."
+  - name: RFABRIC_BASE_MODEL
+    description: "Training: base model id to fine-tune from."
+  - name: RFABRIC_CONFIG_OVERRIDES
+    description: "Training: config overrides as a JSON object (the template's guardrails decide which keys are allowed)."
+  - name: RFABRIC_COMPUTE_OVERRIDES
+    description: "Training: compute overrides as a JSON object (the template's guardrails decide which keys are allowed)."
+  - name: RFABRIC_RUN_TAGS
+    description: "Training: the run's tags key=value, comma or newline separated."
+  - name: RFABRIC_CODE_VERSION
+    description: "Training: the commit RFABRIC_IMAGE was built from; only with RFABRIC_IMAGE, never defaulted from the build."
+  - name: RFABRIC_WAIT
+    description: "Training: true waits until the run ends; the step passes only when it completes."
+    default: "false"
+  - name: RFABRIC_WAIT_TIMEOUT
+    description: "Training, with RFABRIC_WAIT: how long to wait (a duration, e.g. 6h); the run keeps going after a timeout."
+  - name: RFABRIC_REPLACE_PREVIOUS
+    description: "Training: true cancels the runs this repository launched earlier from the same ref and launch template before launching."
+    default: "false"

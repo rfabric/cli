@@ -1,0 +1,147 @@
+# rFabric training run: launches an rFabric training run from a launch template, optionally on
+# the trainer image this pipeline built, and optionally waits for it to end. Include it from the
+# floating minor tag (v0.1 moves to each release of 0.1), or from an exact release (v0.1.10) to
+# pin it:
+#
+#   include:
+#     - remote: https://raw.githubusercontent.com/rfabric/cli/v0.1/templates/training-run.yml
+#       inputs:
+#         launch-template: trainer
+#         experiment: exp_...
+#         image: $TRAINER_IMAGE
+#         code-version: $CI_COMMIT_SHA
+#         client-id: rf_svc_...
+#
+# With dir, a merge request pipeline runs the apply preview of the launch template files
+# (problems fail the job); a pipeline on base-branch applies the directory, with image and
+# code-version for launch-template, then launches.
+#
+# Secretless: the job's identity token RFABRIC_ID_TOKEN (audience: the audience input, equal to
+# the trust's audience) is exchanged by the CLI. client-id signs in on every pipeline but a merge
+# request's when pull-request-client-id is set: give merge requests a credential that cannot
+# configure launch templates. A project CI/CD variable overrides the job variable of the same
+# name, so a CI/CD variable RFABRIC_PULL_REQUEST_CLIENT_ID reaches the job without the input;
+# never pass the input as $RFABRIC_PULL_REQUEST_CLIENT_ID, which GitLab keeps as that text when
+# it is unset. A project variable named like another job variable (RFABRIC_<INPUT>, e.g.
+# RFABRIC_DATASET_VERSIONS) likewise replaces the value its input maps, which is why the presets
+# pass TRAINING_* variables. client-secret is only for a credential without a trust; pass a
+# masked CI/CD variable (client-secret: $RFABRIC_SECRET), never the secret itself.
+# A merge request note per launch template is written when the RFABRIC_GITLAB_TOKEN CI/CD
+# variable holds a token with the api scope.
+spec:
+  inputs:
+    launch-template:
+      description: "Launch template id or slug. With dir: the slug of the template's file."
+    experiment:
+      description: Experiment id the run belongs to.
+    dataset-versions:
+      description: Dataset version ids, comma or newline separated.
+      default: ""
+    base-model:
+      description: Base model id to fine-tune from.
+      default: ""
+    config-overrides:
+      description: Training config overrides as a JSON object (the template's guardrails decide which keys are allowed).
+      default: ""
+    compute-overrides:
+      description: Compute overrides as a JSON object (the template's guardrails decide which keys are allowed).
+      default: ""
+    run-tags:
+      description: The training run's tags key=value, comma or newline separated.
+      default: ""
+    image:
+      description: Trainer image <repository>@sha256:<digest> instead of the template's (the template must allow the image override).
+      default: ""
+    code-version:
+      description: The commit image was built from; only with image, never defaulted from the build.
+      default: ""
+    dir:
+      description: "Definition directory of launch template files (e.g. training): the apply preview on a merge request, the apply on base-branch."
+      default: ""
+    base-branch:
+      description: "Branch whose pipelines apply dir (default: the project's default branch)."
+      default: ""
+    wait:
+      description: "true: wait until the run ends; the job passes only when it completes."
+      default: "false"
+      options: ["true", "false"]
+    wait-timeout:
+      description: "With wait: how long to wait (a duration, e.g. 6h); the run keeps going after a timeout."
+      default: ""
+    replace-previous:
+      description: "true: cancel the runs this project launched earlier from the same ref and launch template before launching."
+      default: "false"
+      options: ["true", "false"]
+    workspace:
+      description: "Workspace id (default: the credential's workspace)."
+      default: ""
+    profile:
+      description: CLI profile (production, staging, dev).
+      default: production
+    api-url:
+      description: Explicit API URL instead of profile.
+      default: ""
+    auth-url:
+      description: Explicit auth URL instead of profile.
+      default: ""
+    client-id:
+      description: Service credential client id, used on every pipeline but a merge request's when pull-request-client-id is set.
+    pull-request-client-id:
+      description: "Service credential client id used on merge request pipelines: a credential that trusts merge requests and cannot configure launch templates (default: client-id)."
+      default: ""
+    client-secret:
+      description: Secret, only for a credential without a trust (a masked CI/CD variable reference).
+      default: ""
+    cli-version:
+      description: CLI version, the tag of the job image.
+      default: "0.1.14"
+    audience:
+      description: Audience of the job's identity token; equal to the trust's audience (the auth issuer of the target environment).
+      default: https://auth.rfabric.io
+    stage:
+      description: Pipeline stage of the job.
+      default: test
+---
+rfabric-training-run:
+  stage: $[[ inputs.stage ]]
+  image:
+    name: ghcr.io/rfabric/cli:$[[ inputs.cli-version ]]
+    entrypoint: [""]
+  id_tokens:
+    RFABRIC_ID_TOKEN:
+      aud: $[[ inputs.audience ]]
+  variables:
+    RFABRIC_LAUNCH_TEMPLATE: $[[ inputs.launch-template ]]
+    RFABRIC_EXPERIMENT: $[[ inputs.experiment ]]
+    RFABRIC_DATASET_VERSIONS: $[[ inputs.dataset-versions ]]
+    RFABRIC_BASE_MODEL: $[[ inputs.base-model ]]
+    RFABRIC_CONFIG_OVERRIDES: $[[ inputs.config-overrides ]]
+    RFABRIC_COMPUTE_OVERRIDES: $[[ inputs.compute-overrides ]]
+    RFABRIC_RUN_TAGS: $[[ inputs.run-tags ]]
+    RFABRIC_IMAGE: $[[ inputs.image ]]
+    RFABRIC_CODE_VERSION: $[[ inputs.code-version ]]
+    RFABRIC_DIR: $[[ inputs.dir ]]
+    RFABRIC_BASE_BRANCH: $[[ inputs.base-branch ]]
+    RFABRIC_WAIT: $[[ inputs.wait ]]
+    RFABRIC_WAIT_TIMEOUT: $[[ inputs.wait-timeout ]]
+    RFABRIC_REPLACE_PREVIOUS: $[[ inputs.replace-previous ]]
+    RFABRIC_WORKSPACE: $[[ inputs.workspace ]]
+    RFABRIC_PROFILE: $[[ inputs.profile ]]
+    RFABRIC_API_URL: $[[ inputs.api-url ]]
+    RFABRIC_AUTH_URL: $[[ inputs.auth-url ]]
+    RFABRIC_CLIENT_ID: $[[ inputs.client-id ]]
+    RFABRIC_PULL_REQUEST_CLIENT_ID: $[[ inputs.pull-request-client-id ]]
+    RFABRIC_CLIENT_SECRET: $[[ inputs.client-secret ]]
+  script:
+    - /opt/rfabric/scripts/gitlab.sh run training-run
+  # Runs after a cancel too (CI_JOB_STATUS=canceled): cancels the waited training run, writes
+  # the dotenv outputs and the merge request note.
+  after_script:
+    - /opt/rfabric/scripts/gitlab.sh after training-run
+  artifacts:
+    when: always
+    paths:
+      - rfabric-training-run/*.md
+      - rfabric-training-run/outputs.json
+    reports:
+      dotenv: rfabric-training-run/outputs.env

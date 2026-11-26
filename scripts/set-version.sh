@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # set-version.sh <version>: pins the wrappers to rfabric <version> (no leading v): writes
-# VERSION and stamps the defaults that cannot read VERSION at run time (the GitLab template's
+# VERSION and stamps the defaults that cannot read VERSION at run time (the GitLab templates'
 # cli-version input, the pipe image in pipe.yml). cli-src's release workflow runs it before
 # each stable release tag.
 set -euo pipefail
@@ -23,9 +23,11 @@ stamp() {
 }
 
 printf '%s\n' "$version" > "$root/VERSION"
-stamp "$root/templates/sim-run.yml" \
-  "/^    cli-version:/,/^      default:/ s/^(      default: ).*/\\1\"$version\"/" \
-  "      default: \"$version\""
+for template in sim-run training-run; do
+  stamp "$root/templates/$template.yml" \
+    "/^    cli-version:/,/^      default:/ s/^(      default: ).*/\\1\"$version\"/" \
+    "      default: \"$version\""
+done
 stamp "$root/pipe.yml" \
   "s#^(image: ghcr\\.io/rfabric/cli:).*#\\1$version#" \
   "image: ghcr.io/rfabric/cli:$version"

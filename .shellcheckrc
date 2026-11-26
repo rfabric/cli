@@ -1,3 +1,3 @@
-# The provider scripts source scripts/sim-run.sh (# shellcheck source=sim-run.sh).
+# The provider scripts source a run script (scripts/sim-run.sh, scripts/training-run.sh), which sources scripts/ci-job.sh (# shellcheck source=...).
 source-path=SCRIPTDIR
 external-sources=true

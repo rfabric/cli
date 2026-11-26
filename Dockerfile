@@ -31,5 +31,5 @@ FROM base AS cli-local
 COPY --from=cli rfabric /usr/local/bin/rfabric
 
 FROM cli-${RFABRIC_CLI}
-COPY scripts/sim-run.sh scripts/gitlab.sh scripts/pipe.sh /opt/rfabric/scripts/
+COPY scripts/ci-job.sh scripts/sim-run.sh scripts/training-run.sh scripts/gitlab.sh scripts/pipe.sh /opt/rfabric/scripts/
 ENTRYPOINT ["/opt/rfabric/scripts/pipe.sh"]

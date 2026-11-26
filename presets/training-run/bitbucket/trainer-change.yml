@@ -1,0 +1,46 @@
+# rFabric training preset: a push to the base branch that changes the trainer (its code, config,
+# Dockerfile or lockfile, and the launch template files under training/). It builds the trainer
+# image, applies training/ with that image and commit for the launch template (so the template
+# runs the new trainer from now on), then launches a training run on it. Copy into
+# bitbucket-pipelines.yml; ADAPT marks what to change. The commit the image was built from is
+# the pushed commit, BITBUCKET_COMMIT.
+# Repository variables: TRAINING_CLIENT_ID, TRAINING_EXPERIMENT_ID, TRAINING_DATASET_VERSIONS,
+# DOCKER_USERNAME, DOCKER_PASSWORD. The step clones the pushed commit, so RFABRIC_DIR reads training/.
+definitions:
+  steps:
+    - step: &train
+        name: Build the trainer, apply training/ and launch a training run
+        services: [docker]
+        oidc:
+          audiences:
+            - https://auth.rfabric.io # ADAPT: the trust's audience
+        condition:
+          changesets:
+            includePaths: # ADAPT: the trainer's paths
+              - "trainer/**"
+              - "configs/**"
+              - "training/**"
+              - Dockerfile
+              - uv.lock
+        script:
+          # The trainer image, pushed and passed on by digest. ADAPT: registry, repository,
+          # Dockerfile; DOCKER_USERNAME and DOCKER_PASSWORD are secured repository variables.
+          - export TRAINER_REPOSITORY=docker.io/acme/trainer
+          - echo "$DOCKER_PASSWORD" | docker login --username "$DOCKER_USERNAME" --password-stdin docker.io
+          - docker build --file Dockerfile --tag "$TRAINER_REPOSITORY:$BITBUCKET_COMMIT" .
+          - docker push "$TRAINER_REPOSITORY:$BITBUCKET_COMMIT"
+          - export TRAINER_IMAGE=$(docker inspect --format '{{index .RepoDigests 0}}' "$TRAINER_REPOSITORY:$BITBUCKET_COMMIT")
+          - pipe: docker://ghcr.io/rfabric/cli:0.1
+            variables:
+              RFABRIC_LAUNCH_TEMPLATE: trainer # ADAPT
+              RFABRIC_EXPERIMENT: $TRAINING_EXPERIMENT_ID
+              RFABRIC_DATASET_VERSIONS: $TRAINING_DATASET_VERSIONS
+              RFABRIC_CLIENT_ID: $TRAINING_CLIENT_ID
+              RFABRIC_DIR: training
+              RFABRIC_IMAGE: $TRAINER_IMAGE
+              RFABRIC_CODE_VERSION: $BITBUCKET_COMMIT
+
+pipelines:
+  branches:
+    main: # ADAPT: the base branch (RFABRIC_BASE_BRANCH when it is not main)
+      - step: *train
