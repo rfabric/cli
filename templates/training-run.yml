@@ -94,7 +94,7 @@ spec:
       default: ""
     cli-version:
       description: CLI version, the tag of the job image.
-      default: "0.1.20"
+      default: "0.1.21"
     audience:
       description: Audience of the job's identity token; equal to the trust's audience (the auth issuer of the target environment).
       default: https://auth.rfabric.io
