@@ -5,10 +5,11 @@
 # ADAPT marks what to change. Repository variables: TRAINING_PULL_REQUEST_CLIENT_ID (a credential
 # of the pull request workspace), TRAINING_PULL_REQUEST_WORKSPACE_ID,
 # TRAINING_PULL_REQUEST_EXPERIMENT_ID, TRAINING_PULL_REQUEST_DATASET_VERSIONS.
-# Repository secret: RFABRIC_TRAINER_TOKEN, a GitHub token with read access to
-# rfabric/rfabric-trainer, needed when the trainer image installs rfabric-trainer. The build reads
-# it as the BuildKit secret github_token: it exists only during the build and never reaches a
-# layer. Unset, the build runs without the secret.
+# Repository secret: RFABRIC_PACKAGES_TOKEN, a GitHub token that reads the private rFabric Python
+# packages rfabric/rfabric-candidate, rfabric/rfabric-simulator and rfabric/rfabric-trainer,
+# needed when the trainer image installs rfabric-trainer. The build reads it as the BuildKit
+# secret github_token: it exists only during the build and never reaches a layer. Unset, the
+# build runs without the secret.
 name: Train (pull request)
 on:
   pull_request:
@@ -48,7 +49,7 @@ jobs:
           file: Dockerfile
           push: true
           tags: ${{ steps.repository.outputs.name }}:${{ github.event.pull_request.head.sha }}
-          secrets: github_token=${{ secrets.RFABRIC_TRAINER_TOKEN }}
+          secrets: github_token=${{ secrets.RFABRIC_PACKAGES_TOKEN }}
 
   train:
     needs: build

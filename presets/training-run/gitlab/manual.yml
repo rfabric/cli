@@ -6,7 +6,8 @@
 # named like a template input, RFABRIC_<INPUT>, overrides the job variable the template sets, the
 # value of the Run pipeline form included). Protect the job's GPU spend with a protected
 # environment and deployment approvals where your plan has them.
-# Masked CI/CD variable: RFABRIC_TRAINER_TOKEN, a GitHub token with read access to
+# Masked CI/CD variable: RFABRIC_PACKAGES_TOKEN, a GitHub token that reads the private rFabric
+# Python packages rfabric/rfabric-candidate, rfabric/rfabric-simulator and
 # rfabric/rfabric-trainer, needed when the trainer image installs rfabric-trainer (no template
 # input has that name, so it overrides nothing). The build reads it as the BuildKit secret
 # github_token: it exists only during the build and never reaches a layer. Unset, the build runs
@@ -58,7 +59,7 @@ build-trainer:
   variables:
     TRAINER_REPOSITORY: $CI_REGISTRY_IMAGE/trainer
   script:
-    - printf '%s' "$RFABRIC_TRAINER_TOKEN" > /tmp/github_token
+    - printf '%s' "$RFABRIC_PACKAGES_TOKEN" > /tmp/github_token
     - echo "$CI_REGISTRY_PASSWORD" | docker login --username "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
     - docker build --secret id=github_token,src=/tmp/github_token --file Dockerfile --tag "$TRAINER_REPOSITORY:$CI_COMMIT_SHA" .
     - docker push "$TRAINER_REPOSITORY:$CI_COMMIT_SHA"

@@ -9,10 +9,11 @@
 # workspace), TRAINING_PULL_REQUEST_WORKSPACE_ID, TRAINING_PULL_REQUEST_EXPERIMENT_ID,
 # TRAINING_PULL_REQUEST_DATASET_VERSIONS, TRAINING_BITBUCKET_TOKEN (optional: the pull request
 # comment), DOCKER_USERNAME, DOCKER_PASSWORD.
-# Secured repository variable: RFABRIC_TRAINER_TOKEN, a GitHub token with read access to
-# rfabric/rfabric-trainer, needed when the trainer image installs rfabric-trainer. The build reads
-# it as the BuildKit secret github_token: it exists only during the build and never reaches a
-# layer. Unset, the build runs with an empty secret.
+# Secured repository variable: RFABRIC_PACKAGES_TOKEN, a GitHub token that reads the private
+# rFabric Python packages rfabric/rfabric-candidate, rfabric/rfabric-simulator and
+# rfabric/rfabric-trainer, needed when the trainer image installs rfabric-trainer. The build
+# reads it as the BuildKit secret github_token: it exists only during the build and never
+# reaches a layer. Unset, the build runs with an empty secret.
 definitions:
   steps:
     - step: &train
@@ -28,7 +29,7 @@ definitions:
           # The token file stays outside the build context, so no COPY can put it in a layer.
           - export TRAINER_REPOSITORY=docker.io/acme/trainer
           - export DOCKER_BUILDKIT=1
-          - printf '%s' "$RFABRIC_TRAINER_TOKEN" > /tmp/github_token
+          - printf '%s' "$RFABRIC_PACKAGES_TOKEN" > /tmp/github_token
           - echo "$DOCKER_PASSWORD" | docker login --username "$DOCKER_USERNAME" --password-stdin docker.io
           - docker build --secret id=github_token,src=/tmp/github_token --file Dockerfile --tag "$TRAINER_REPOSITORY:$BITBUCKET_COMMIT" .
           - docker push "$TRAINER_REPOSITORY:$BITBUCKET_COMMIT"
