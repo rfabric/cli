@@ -5,6 +5,10 @@
 # .github/workflows/; ADAPT marks what to change. Repository variables: TRAINING_CLIENT_ID,
 # TRAINING_EXPERIMENT_ID, TRAINING_DATASET_VERSIONS. Environment gpu-training: its required
 # reviewers approve before GPU spend.
+# Repository secret: RFABRIC_TRAINER_TOKEN, a GitHub token with read access to
+# rfabric/rfabric-trainer, needed when the trainer image installs rfabric-trainer. The build reads
+# it as the BuildKit secret github_token: it exists only during the build and never reaches a
+# layer. Unset, the build runs without the secret.
 name: Train (trainer change)
 on:
   push:
@@ -44,6 +48,7 @@ jobs:
           file: Dockerfile
           push: true
           tags: ${{ steps.repository.outputs.name }}:${{ github.sha }}
+          secrets: github_token=${{ secrets.RFABRIC_TRAINER_TOKEN }}
 
   train:
     needs: build

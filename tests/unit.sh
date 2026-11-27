@@ -611,8 +611,14 @@ done
 
 # The training presets read their values from TRAINING_* variables: on GitLab a project variable
 # named like a template job variable (RFABRIC_<INPUT>) would override the value an input maps.
-check "training presets: no RFABRIC_ variable as a value source" equal \
-  "$(grep -rnoE '(vars\.|\$)RFABRIC_[A-Z_]+' "$root/presets" || true)" ""
+# RFABRIC_TRAINER_TOKEN is the image build's secret and no template input.
+check "training presets: no RFABRIC_ variable as a value source but the build's RFABRIC_TRAINER_TOKEN" equal \
+  "$(grep -rnoE '(vars\.|\$)RFABRIC_[A-Z_]+' "$root/presets" | grep -v ':\$RFABRIC_TRAINER_TOKEN$' || true)" ""
+
+# Every preset's image build passes the BuildKit secret github_token: a trainer image that
+# installs rfabric-trainer reads it.
+check "training presets: every image build passes the BuildKit secret github_token" equal \
+  "$(grep -rLE '(secrets: github_token=\$\{\{ secrets\.RFABRIC_TRAINER_TOKEN \}\}|--secret id=github_token,src=/tmp/github_token)' "$root/presets/training-run" || true)" ""
 
 check "an unknown run script is a usage error" equal \
   "$(env -i PATH="$PATH" "$root/scripts/github.sh" run train > /dev/null 2>&1; echo $?)" 2

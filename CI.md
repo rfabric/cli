@@ -180,10 +180,12 @@ The step exits with the CLI's exit code (`rfabric help exit-codes`):
 | 40 | the run was cancelled, or the wait was interrupted (the run is cancelled) |
 | 50 | the run failed |
 | 60 | `wait-timeout` expired; the run keeps going |
-| 3 | validation: the apply preview or apply found problems in `dir`, or the launch was refused (a guardrail, an image the pool cannot pull) |
+| 3 | validation: the apply preview or apply found problems in `dir`, or the launch was refused (a guardrail, a trainer image rFabric cannot read from its registry or one built for another platform than the pool's machines) |
 | 2 | usage: a missing or contradictory input (`code-version` without `image`, `wait-timeout` without `wait`, ...) |
 | 5 | permission denied (e.g. `replace-previous` without `training:cancel`) |
 | 1 | the pull request cannot reach rFabric (a fork), or another failure |
+
+`image` is any container image that contains the training command, pinned by digest; it is not built from an rFabric image. The training command may use the trainer library `rfabric-trainer` (Python module `rfabric_trainer`) or speak the trainer protocol itself. On rFabric's pools and on connected pools, an image in Amazon ECR or Google Artifact Registry is pulled through the container registry connected to the launching workspace or its organization (`rfabric provider-credential setup-token --help` shows how to connect one); an image on any other registry host, the presets' `ghcr.io`, GitLab Container Registry and `docker.io` included, must be publicly readable. On self-hosted pools the host's own `docker login` decides what it can pull.
 
 `code-version` is the commit `image` was built from. The wrappers never default it: the pipeline states it (the provider's commit variable: `github.sha`, `CI_COMMIT_SHA`, `BITBUCKET_COMMIT`), and it goes only with `image`.
 
@@ -224,6 +226,8 @@ GitHub and GitLab use these names; the Bitbucket pipe uses `RFABRIC_` plus the n
 ### Trigger presets
 
 Ready pipeline files under `presets/training-run/<github|gitlab|bitbucket>/`, one per preset. Each builds and pushes the trainer image, passes it on by digest, and calls the training entry point with `code-version` set to the commit it built from, named in the file. GitHub presets use `permissions: id-token: write`; the GPU presets run the launch in the environment `gpu-training`, whose required reviewers approve before GPU spend. No commit-message markers. The presets read their values from CI variables named `TRAINING_*` (`TRAINING_CLIENT_ID`, `TRAINING_EXPERIMENT_ID`, `TRAINING_DATASET_VERSIONS`; pull request presets `TRAINING_PULL_REQUEST_CLIENT_ID`, `TRAINING_PULL_REQUEST_WORKSPACE_ID`, `TRAINING_PULL_REQUEST_EXPERIMENT_ID`, `TRAINING_PULL_REQUEST_DATASET_VERSIONS`, Bitbucket `TRAINING_BITBUCKET_TOKEN`): on GitLab a project CI/CD variable named like a template job variable (`RFABRIC_<INPUT>`, e.g. `RFABRIC_DATASET_VERSIONS`) overrides the value the template maps from the input, a value typed into the Run pipeline form included.
+
+Each preset's image build passes the BuildKit secret `github_token` from `RFABRIC_TRAINER_TOKEN` (GitHub: a repository secret; GitLab: a masked CI/CD variable; Bitbucket: a secured repository variable): a GitHub token with read access to `rfabric/rfabric-trainer`, needed when the trainer image installs `rfabric-trainer` (`rfabric-trainer @ git+https://github.com/rfabric/rfabric-trainer.git@v0.1.0`), whose Dockerfile reads it with `RUN --mount=type=secret,id=github_token`. The token exists only during the build and never reaches a layer; it is separate from rFabric authentication. A trainer image that does not install the library builds with the variable unset.
 
 | Preset | Trigger | Launch |
 |---|---|---|
