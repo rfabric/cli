@@ -21,14 +21,18 @@
 # rfabric-example-rsi-fixture-trainer on the local Docker pool cpu-standard), which the GitHub
 # base-branch push applies.
 #
-# Needs the stack's api and auth (with the sim.attempt handler image on the local Docker pool:
-# `mise run compute:images --seed sim-attempt`, and the rsi fixture trainer image in the local
-# engine), `rfabric-dev` (`mise run cli:dev`), node, jq, git and docker. Optional:
+# Needs the stack's api and auth (with the sim.attempt and training.run handler images on the
+# local Docker pool: `mise run compute:images --seed sim-attempt training-run`, and the rsi
+# fixture trainer image in the local engine: `scripts/images.py` of examples/rsi-fixture builds
+# it, the launch template file pins its `@sha256:`), `rfabric-dev` (`mise run cli:dev`), node,
+# jq, git and docker. Optional:
 # RFABRIC_API_URL (default http://localhost:10201), RFABRIC_AUTH_URL (default
 # http://localhost:10301; a stack slot N serves them on 10200+N and 10300+N),
 # RFABRIC_TEST_STUB_PORT (default 18091), RFABRIC_TEST_IMAGE_CLI (the CLI the pipe image gets: a
 # Linux build for the Docker engine's platform; default rfabric-dev, which only a Linux host can
-# put in the image).
+# put in the image). The pipe image runs with `--network host` and reaches the stack and the stub
+# on localhost: on Docker Desktop that needs host networking enabled (Settings > Resources >
+# Network).
 set -uo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
