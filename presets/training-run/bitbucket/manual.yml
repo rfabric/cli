@@ -11,6 +11,11 @@
 # Deployments), allow only maintainers to deploy to it (Bitbucket Premium custom deployment
 # permissions), and copy its UUID, braces included, into the credential trust. Without that
 # restriction any branch with a deployment: training step signs in as the base-branch credential.
+# Secured repository variable: RFABRIC_PACKAGES_TOKEN, a GitHub token that reads the private
+# rFabric Python packages rfabric/rfabric-candidate, rfabric/rfabric-simulator and
+# rfabric/rfabric-trainer, needed when the trainer image installs rfabric-trainer. The build
+# reads it as the BuildKit secret github_token: it exists only during the build and never
+# reaches a layer. Unset, the build runs with an empty secret.
 definitions:
   steps:
     - step: &train
@@ -23,9 +28,12 @@ definitions:
         script:
           # The trainer image, pushed and passed on by digest. ADAPT: registry, repository,
           # Dockerfile; DOCKER_USERNAME and DOCKER_PASSWORD are secured repository variables.
+          # The token file stays outside the build context, so no COPY can put it in a layer.
           - export TRAINER_REPOSITORY=docker.io/acme/trainer
+          - export DOCKER_BUILDKIT=1
+          - printf '%s' "$RFABRIC_PACKAGES_TOKEN" > /tmp/github_token
           - echo "$DOCKER_PASSWORD" | docker login --username "$DOCKER_USERNAME" --password-stdin docker.io
-          - docker build --file Dockerfile --tag "$TRAINER_REPOSITORY:$BITBUCKET_COMMIT" .
+          - docker build --secret id=github_token,src=/tmp/github_token --file Dockerfile --tag "$TRAINER_REPOSITORY:$BITBUCKET_COMMIT" .
           - docker push "$TRAINER_REPOSITORY:$BITBUCKET_COMMIT"
           - export TRAINER_IMAGE=$(docker inspect --format '{{index .RepoDigests 0}}' "$TRAINER_REPOSITORY:$BITBUCKET_COMMIT")
           - pipe: docker://ghcr.io/rfabric/cli:0.1

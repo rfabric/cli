@@ -7,6 +7,12 @@
 # TRAINING_PULL_REQUEST_WORKSPACE_ID, TRAINING_PULL_REQUEST_EXPERIMENT_ID,
 # TRAINING_PULL_REQUEST_DATASET_VERSIONS (never RFABRIC_*: a project variable named like a
 # template input overrides the job variable the template sets).
+# Masked CI/CD variable: RFABRIC_PACKAGES_TOKEN, a GitHub token that reads the private rFabric
+# Python packages rfabric/rfabric-candidate, rfabric/rfabric-simulator and
+# rfabric/rfabric-trainer, needed when the trainer image installs rfabric-trainer (no template
+# input has that name, so it overrides nothing). The build reads it as the BuildKit secret
+# github_token: it exists only during the build and never reaches a layer. Unset, the build runs
+# with an empty secret.
 
 stages: [build, train]
 
@@ -30,6 +36,7 @@ include:
 
 # The trainer image, pushed and passed on by digest: the dotenv report's RFABRIC_IMAGE takes
 # precedence over the template job's variable of the same name. ADAPT: context and Dockerfile.
+# The token file stays outside the build context, so no COPY can put it in a layer.
 build-trainer:
   stage: build
   image: docker:27
@@ -38,8 +45,9 @@ build-trainer:
   variables:
     TRAINER_REPOSITORY: $CI_REGISTRY_IMAGE/trainer
   script:
+    - printf '%s' "$RFABRIC_PACKAGES_TOKEN" > /tmp/github_token
     - echo "$CI_REGISTRY_PASSWORD" | docker login --username "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
-    - docker build --file Dockerfile --tag "$TRAINER_REPOSITORY:$CI_COMMIT_SHA" .
+    - docker build --secret id=github_token,src=/tmp/github_token --file Dockerfile --tag "$TRAINER_REPOSITORY:$CI_COMMIT_SHA" .
     - docker push "$TRAINER_REPOSITORY:$CI_COMMIT_SHA"
     - echo "RFABRIC_IMAGE=$(docker inspect --format '{{index .RepoDigests 0}}' "$TRAINER_REPOSITORY:$CI_COMMIT_SHA")" > trainer.env
   artifacts:

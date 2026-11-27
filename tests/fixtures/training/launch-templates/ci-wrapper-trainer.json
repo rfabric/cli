@@ -7,7 +7,7 @@
   "poolRef": "cpu-standard",
   "defaultConfig": { "command": ["python", "/opt/trainer/train.py"], "iterations": 2 },
   "defaultComputeConfig": {
-    "image": "rfabric-example-rsi-fixture-trainer@sha256:c824a1876e6e9f91b64e1ed099f0dbd757955aedfafd1b741e2dbdb568f9c64f",
+    "image": "rfabric-example-rsi-fixture-trainer@sha256:a24aea98a757bcbb25c2b3ff9b13596cd6f6c7c9f328c7d630c546be62c48dd6",
     "vcpu": 1,
     "memoryMiB": 1024,
     "gpuCount": 0,
