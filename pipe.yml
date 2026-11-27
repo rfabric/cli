@@ -1,5 +1,5 @@
 name: rFabric
-image: ghcr.io/rfabric/cli:0.1.20
+image: ghcr.io/rfabric/cli:0.1.22
 category: Testing
 description: Run rFabric simulation suites against a candidate image or artifact and gate the step on the verdict (Code Insights report, JUnit test results), or, with RFABRIC_LAUNCH_TEMPLATE, launch a training run on the trainer image the pipeline built; outputs in rfabric-result.json.
 repository: https://github.com/rfabric/cli
